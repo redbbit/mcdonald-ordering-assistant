@@ -2,7 +2,7 @@
   'use strict';
 
   var S;
-  var state = { meta: null, showcase: [], campaigns: [], coupons: [], activeCoupon: null, plans: [], selected: new Set(), slots: [], activeSlot: '', lastQuery: null, slotRevision: 0, slide: 0, campaignSlide: 0, toastTimer: 0, rotationTimer: 0, campaignTimer: 0 };
+  var state = { meta: null, showcase: [], campaigns: [], coupons: [], activeCoupon: null, plans: [], selected: new Set(), slots: [], activeSlot: '', lastQuery: null, slotRevision: 0, slide: 0, campaignSlide: 0, toastTimer: 0, rotationTimer: 0, campaignTimer: 0, adapter: null, mode: 'offline', degraded: false, degradeReason: '', requestId: '', availability: {} };
   var $ = function (id) { return document.getElementById(id); };
   var els = {
     metaLine: $('metaLine'), slotSelector: $('slotSelector'), conversation: $('conversation'), request: $('requestText'), charCount: $('charCount'), form: $('advisorForm'), submit: $('submitButton'),
@@ -171,8 +171,14 @@
     var store = state.meta.store || {};
     var slot = store.slotNow;
     var slotText = typeof slot === 'string' ? slot : (slot && (slot.name || slot.label || slot.slot)) || store.slotText || '当前菜单';
-    els.metaLine.innerHTML = '<span class="meta-dot"></span><span>数据更新于 ' + esc(fmtDateTime(state.meta.fetchedAt)) + ' · ' + esc(slotText) + ' · ' + esc(store.distance == null ? '' : store.distance + 'm') + '</span>';
-    els.metaLine.title = (store.name || '') + (store.address ? ' · ' + store.address : '');
+    var simulated = state.mode !== 'online' || state.degraded;
+    var modeLabel = simulated ? '离线预演' : '在线 MCP';
+    var requestId = state.requestId || state.meta.requestId || '';
+    els.metaLine.innerHTML = '<span class="meta-dot ' + (simulated ? 'meta-dot-offline' : '') + '"></span><span>' + modeLabel + ' · 更新于 ' + esc(fmtDateTime(state.meta.fetchedAt)) + ' · ' + esc(slotText) + (requestId ? ' · ID ' + esc(requestId) : '') + '</span>';
+    els.metaLine.title = simulated ? (state.degradeReason || '使用本地快照，在线状态未被校验') : '在线数据来自本机 MCP 服务';
+    if (simulated) {
+      els.notices.innerHTML = '<div class="notice offline-notice"><strong>离线预演</strong> 当前显示本地快照，价格和优惠券未向 MCP 实时校验；库存以门店实际为准。' + (state.degradeReason ? ' ' + esc(state.degradeReason) : '') + '</div>';
+    }
   }
   function renderAvoidOptions(options, selectedValues) {
     selectedValues = selectedValues || [];
@@ -199,13 +205,18 @@
     if (!tags.length) tags.push(buildTag('按你的需求搭配', ''));
     var itemHtml = items.map(function (item) {
       var imgObj = { image: item.image, imageLocal: item.imageLocal, imageRemote: item.imageRemote, name: item.name };
+      var itemCode = item.productCode || item.code || item.product_code || '';
+      var availability = state.availability[itemCode] || item.availability;
+      var stock = (plan.simulated === true || state.mode !== 'online' || availability === 'unknown') ? '<small class="stock-unknown">库存以门店为准</small>' : ((availability === 'soldout') ? '<small class="stock-soldout">在线探测：售罄</small>' : ((availability === 'available' || availability === 'ok') ? '<small class="stock-available">在线探测：可售</small>' : '<small class="stock-unknown">库存未校验</small>'));
       return '<div class="plan-item" title="' + attr(item.name) + ' · ' + roleLabel(item) + '">' + imageMarkup(imgObj, '', item.name + '，官方商品图') +
-        '<span>' + esc(item.name) + '<b>×' + esc(item.quantity) + '</b></span></div>';
+        '<span>' + esc(item.name) + '<b>×' + esc(item.quantity) + '</b>' + stock + '</span></div>';
     }).join('');
+    var isSimulated = plan.simulated === true || plan.mode === 'offline' || state.mode !== 'online';
+    var priceNote = isSimulated ? '<span class="source-pill simulated-pill">离线预演</span>' : '<span class="source-pill live-pill">MCP 在线</span>';
     return '<article class="plan-card" data-plan-id="' + attr(plan.planId) + '">' +
       '<div class="plan-main"><div class="plan-cover"><span class="plan-tier">' + esc(tierNames[plan.tier] || '个性搭配') + '</span>' + imageMarkup(items[0] || {}, '', (items[0] && items[0].name || plan.title) + '，麦当劳官方商品图') + '</div>' +
       '<div class="plan-copy"><div class="plan-title-row"><h3>' + esc(plan.title) + '</h3></div><p class="plan-subtitle">' + esc(plan.subtitle || (plan.people + ' 人 · ' + plan.itemCount + ' 款')) + '</p>' +
-      '<p class="plan-why">' + esc(plan.why || '') + '</p><div class="price-line"><strong class="plan-price">' + money(plan.totalPrice) + '</strong><span class="plan-original">' + money(plan.originalPrice) + '</span><span class="save-pill">省 ' + money(plan.discount) + '</span><span class="per-person">人均 ' + money(plan.perPersonPrice) + ' · ' + esc(plan.people) + ' 人</span></div>' +
+      '<p class="plan-why">' + esc(plan.why || '') + '</p><div class="price-line"><strong class="plan-price">' + money(plan.totalPrice) + '</strong><span class="plan-original">' + money(plan.originalPrice) + '</span><span class="save-pill">省 ' + money(plan.discount) + '</span><span class="per-person">人均 ' + money(plan.perPersonPrice) + ' · ' + esc(plan.people) + ' 人</span>' + priceNote + '</div>' +
       '<div class="plan-labels">' + tags.join('') + '</div></div></div>' +
       '<div class="plan-items" aria-label="方案菜品">' + itemHtml + '</div>' +
       '<div class="plan-actions"><button type="button" class="detail-button" data-detail="calories" aria-expanded="false">看这顿热量</button><button type="button" class="detail-button" data-detail="nutrition" aria-expanded="false">看营养成分</button><button type="button" class="select-plan" aria-pressed="false">选这份</button></div>' +
@@ -220,7 +231,7 @@
     }).join('');
     var verdict = plan.calorieVerdict === 'fit' ? '符合本方案目标' : plan.calorieVerdict === 'over' ? '已超出本方案热量目标' : '官方未提供，未估算';
     var klass = plan.calorieVerdict === 'over' ? 'over' : plan.calorieVerdict === 'fit' ? 'fit' : '';
-    return '<h4>这一顿的热量</h4><div class="calorie-summary"><div class="calorie-stat"><b>' + num(plan.totalCalories, 0) + '</b><span>整顿 kcal</span></div><div class="calorie-stat"><b>' + num(plan.perPersonCalories, 0) + '</b><span>人均 kcal</span></div><div class="calorie-stat"><span class="verdict ' + klass + '">' + esc(verdict) + '</span><b>' + (plan.overCalories == null ? '—' : (plan.calorieVerdict === 'over' ? '+' : '') + num(plan.overCalories, 0)) + '</b><span>超出目标 kcal · ' + num(plan.targetCaloriesPerPerson, 0) + ' kcal / 人目标</span></div></div>' +
+    return '<h4>这一顿的热量</h4><div class="calorie-summary"><div class="calorie-stat"><b>' + num(plan.totalCalories, 0) + '</b><span>整顿 kcal</span></div><div class="calorie-stat"><b>' + num(plan.perPersonCalories, 2) + '</b><span>人均 kcal</span></div><div class="calorie-stat"><span class="verdict ' + klass + '">' + esc(verdict) + '</span><b>' + (plan.overCalories == null ? '—' : (plan.calorieVerdict === 'over' ? '+' : '') + num(plan.overCalories, 0)) + '</b><span>超出目标 kcal · ' + num(plan.targetCaloriesPerPerson, 0) + ' kcal / 人目标</span></div></div>' +
       '<div class="detail-rows">' + rows + '</div>' + (plan.unknownItems && plan.unknownItems.length ? '<p class="unknown-list">未提供官方数据：' + esc(plan.unknownItems.join('、')) + '。上方合计仅为已知部分下限。</p>' : '');
   }
   function nutritionPanel(plan) {
@@ -264,7 +275,9 @@
         }
       }
     });
-    els.notices.innerHTML = notices.map(function (text) { return '<div class="notice">' + esc(text) + '</div>'; }).join('');
+    var markup = notices.map(function (text) { return '<div class="notice">' + esc(text) + '</div>'; }).join('');
+    if (state.mode !== 'online' || state.degraded) markup = '<div class="notice offline-notice"><strong>离线预演</strong> 本地快照可用于演示；价格、优惠和库存未实时校验。库存以门店实际为准。' + (state.degradeReason ? ' ' + esc(state.degradeReason) : '') + '</div>' + markup;
+    els.notices.innerHTML = markup;
   }
   function renderPlans(plans) {
     state.plans = plans;
@@ -319,6 +332,20 @@
     setBusy(true);
     try {
       var plans = await S.recommendPlans(query);
+      if (revision !== state.slotRevision) return;
+      state.availability = {};
+      var availabilityCheck = S && typeof S.checkAvailability === 'function' ? S.checkAvailability.bind(S) : (state.adapter && typeof state.adapter.checkAvailability === 'function' ? state.adapter.checkAvailability.bind(state.adapter) : null);
+      if (state.mode === 'online' && availabilityCheck) {
+        var codes = unique([].concat.apply([], (plans || []).map(function (plan) { return (plan.items || []).map(function (item) { return item.productCode || item.code || item.product_code; }); })).filter(Boolean));
+        if (codes.length) {
+          try {
+            var probe = await availabilityCheck(codes);
+            var rows = Array.isArray(probe) ? probe : (probe && (probe.items || probe.results)) || null;
+            if (rows) rows.forEach(function (row) { var code = row.code || row.productCode || row.product_code; if (code) state.availability[code] = row.availability || row.status || (row.available === true ? 'available' : 'unknown'); });
+            else if (probe && typeof probe === 'object') codes.forEach(function (code) { var value = probe[code]; state.availability[code] = typeof value === 'string' ? value : value && (value.availability || value.status) || (value && value.available === true ? 'available' : 'unknown'); });
+          } catch (probeError) { codes.forEach(function (code) { state.availability[code] = 'unknown'; }); }
+        }
+      }
       if (revision !== state.slotRevision) return;
       renderPlans(plans);
       if (options.announce) appendMessage('assistant', options.announce);
@@ -394,6 +421,77 @@
     }
   }
 
+  function splitSelectedPlan() {
+    var planId = $('splitPlan').value;
+    return state.plans.filter(function (plan) { return plan.planId === planId; })[0];
+  }
+  function renderSplitMembers() {
+    var count = Math.max(1, Math.min(12, Number($('splitMembers').value) || 1));
+    $('splitMembers').value = count;
+    $('splitMembersList').innerHTML = Array.from({ length: count }, function (_, index) {
+      return '<label class="split-member"><span>成员 ' + (index + 1) + ' 名称' + ($('splitMode').value === 'byWeight' ? ' · 权重' : '') + '</span><input type="text" data-member-name="' + index + '" value="' + (index === 0 ? '我' : '成员' + (index + 1)) + '" maxlength="20" aria-label="成员 ' + (index + 1) + ' 名称">' + ($('splitMode').value === 'byWeight' ? '<input type="number" data-member-weight="' + index + '" min="0.01" step="0.01" value="1" aria-label="成员 ' + (index + 1) + ' 分账权重">' : '') + '</label>';
+    }).join('');
+    var byItem = $('splitMode').value === 'byItem';
+    $('splitItemsList').hidden = !byItem;
+    if (byItem) renderSplitItems();
+    $('splitResult').hidden = true;
+  }
+  function renderSplitItems() {
+    var plan = splitSelectedPlan();
+    if (!plan) { $('splitItemsList').innerHTML = ''; return; }
+    var members = Array.from(document.querySelectorAll('[data-member-name]'));
+    var options = '<option value="">公共菜 · 全员均摊</option>' + members.map(function (input, index) { return '<option value="' + index + '">' + esc(input.value || ('成员' + (index + 1))) + '</option>'; }).join('');
+    $('splitItemsList').innerHTML = (plan.items || []).map(function (item) {
+      return '<label class="split-item-row"><span>' + esc(item.name) + ' ×' + esc(item.quantity || 1) + '</span><select multiple size="' + Math.min(3, Math.max(2, members.length)) + '" data-item-code="' + attr(item.productCode || item.code || item.product_code || '') + '" aria-label="选择 ' + attr(item.name) + ' 的付款成员">' + options + '</select></label>';
+    }).join('') + '<p class="soft-placeholder">未选择成员的菜品会作为公共菜，由所有人均摊。</p>';
+  }
+  function openSplitPanel() {
+    var selected = selectedPlanObjects();
+    if (!selected.length) { showToast('先勾选一个或多个方案'); return; }
+    $('splitPanel').hidden = false;
+    $('splitPlan').innerHTML = selected.map(function (plan) { return '<option value="' + attr(plan.planId) + '">' + esc(plan.title || '个性套餐') + ' · ' + money(plan.totalPrice) + '</option>'; }).join('');
+    $('splitMembers').value = selected[0].people || $('people').value || 2;
+    $('splitStatus').textContent = '离线时是预演分账；在线时按服务返回的金额分摊。';
+    renderSplitMembers();
+    $('splitPanel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    $('splitMode').focus();
+  }
+  function renderSplitResult(bill) {
+    var shares = bill.shares || bill.members || bill.allocations || [];
+    var balanced = bill.balanced === true;
+    $('splitResult').innerHTML = shares.map(function (share, index) {
+      var name = share.name || (share.member && share.member.name) || ('成员' + (index + 1));
+      var amount = share.amount != null ? share.amount : (share.total != null ? share.total : share.payPrice);
+      var items = share.items || share.itemNames || [];
+      return '<div class="split-result-card"><strong>' + money(amount) + '</strong><span>' + esc(name) + (items.length ? ' · ' + esc(items.map(function (item) { return typeof item === 'string' ? item : item.name; }).join('、')) : '') + '</span></div>';
+    }).join('') + '<p class="split-result-note">' + (bill.simulated ? '⚠ ' : '✓ ') + esc(bill.note || (bill.simulated ? '预演分账，在线后校准' : '按实付分摊')) + (balanced ? ' · 金额已平衡' : '') + (bill.total != null ? ' · 总额 ' + money(bill.total) : '') + '</p>';
+    $('splitResult').hidden = false;
+    $('splitStatus').textContent = balanced ? '分账完成：各份合计与总额一致。' : '分账已返回；请核对各成员金额。';
+  }
+  async function runSplit() {
+    var plan = splitSelectedPlan();
+    if (!plan) { showToast('请选择需要分账的方案'); return; }
+    if (!S || typeof S.splitBill !== 'function') { $('splitStatus').textContent = '当前服务版本尚未提供 splitBill；请同步 WorkBuddy 的最新 service.js。'; return; }
+    var members = Array.from(document.querySelectorAll('[data-member-name]')).map(function (input, index) {
+      var member = { name: input.value.trim() || ('成员' + (index + 1)) };
+      var weight = document.querySelector('[data-member-weight="' + index + '"]');
+      if (weight) member.weight = Number(weight.value) || 1;
+      return member;
+    });
+    var mode = $('splitMode').value;
+    var options = { mode: mode, members: members };
+    if (mode === 'byItem') options.items = Array.from(document.querySelectorAll('[data-item-code]')).map(function (select) {
+      return { code: select.dataset.itemCode, owners: Array.from(select.selectedOptions).filter(function (option) { return option.value !== ''; }).map(function (option) { return Number(option.value); }).filter(function (value) { return isFinite(value); }) };
+    });
+    $('runSplit').disabled = true;
+    $('splitStatus').textContent = '正在计算分账…';
+    try {
+      var bill = await S.splitBill(plan.planId, options);
+      renderSplitResult(bill || {});
+    } catch (error) { $('splitStatus').textContent = error && error.message ? error.message : '分账暂时失败，请重试。'; }
+    finally { $('runSplit').disabled = false; }
+  }
+
   function applyCoupon(index) {
     var coupon = state.coupons[index];
     if (!coupon) return;
@@ -435,8 +533,11 @@
   }
 
   async function readServiceSnapshot() {
-    var loaded = await Promise.all([S.getMeta(), S.getShowcase(12), S.getCampaigns(), S.getAvoidOptions(), S.getGoalOptions()]);
+    var loaded = await Promise.all([S.getMeta(), state.adapter ? S.getShowcase(state.activeSlot || undefined, 12) : S.getShowcase(12), S.getCampaigns(), S.getAvoidOptions(), S.getGoalOptions()]);
     state.meta = loaded[0];
+    var modeValue = typeof S.mode === 'function' ? S.mode() : S.mode;
+    state.mode = modeValue || (S.isSimulated && S.isSimulated() ? 'offline' : 'online');
+    state.requestId = state.meta && state.meta.requestId || '';
     state.showcase = loaded[1] || [];
     var bundle = loaded[2] || {};
     state.coupons = bundle.coupons || [];
@@ -459,6 +560,8 @@
     state.selected.clear();
     state.plans = [];
     state.activeCoupon = null;
+    $('splitPanel').hidden = true;
+    $('splitResult').hidden = true;
     els.planGrid.innerHTML = '';
     els.notices.innerHTML = '';
     els.selectionBar.hidden = true;
@@ -470,7 +573,7 @@
     els.slotSelector.disabled = true;
     if (hadQuery) setBusy(true);
     try {
-      S = McAdvisor.createService(key ? { slot: key } : {});
+      S = McAdvisor.createService(Object.assign(state.adapter ? { adapter: state.adapter } : {}, key ? { slot: key } : {}));
       await readServiceSnapshot();
       if (revision !== state.slotRevision) return;
       if (hadQuery) {
@@ -562,6 +665,18 @@
     });
     $('calculateSelected').addEventListener('click', function () { selectedAction('calculate'); });
     $('summarySelected').addEventListener('click', function () { selectedAction('summary'); });
+    $('splitSelected').addEventListener('click', openSplitPanel);
+    $('closeSplit').addEventListener('click', function () { $('splitPanel').hidden = true; });
+    $('splitMembers').addEventListener('input', renderSplitMembers);
+    $('splitMode').addEventListener('change', renderSplitMembers);
+    $('splitPlan').addEventListener('change', renderSplitItems);
+    $('splitMembersList').addEventListener('input', function (event) { if (event.target.matches('[data-member-name]') && $('splitMode').value === 'byItem') renderSplitItems(); });
+    $('runSplit').addEventListener('click', runSplit);
+    $('projectorToggle').addEventListener('click', function () {
+      var enabled = document.body.classList.toggle('projector-mode');
+      $('projectorToggle').setAttribute('aria-pressed', enabled ? 'true' : 'false');
+      $('projectorToggle').textContent = enabled ? '退出投屏' : '投屏大字';
+    });
     $('closeSummary').addEventListener('click', function () { els.summaryOutput.hidden = true; });
     $('copySummary').addEventListener('click', async function () {
       try { await navigator.clipboard.writeText(els.summaryText.textContent); showToast('清单已复制'); }
@@ -578,7 +693,25 @@
       state.slots = McAdvisor.listSlots().filter(function (slot) { return slot.available; });
       state.activeSlot = state.slots.length ? (state.slots[0].key || '') : '';
       renderSlotSelector();
-      S = McAdvisor.createService(state.activeSlot ? { slot: state.activeSlot } : {});
+      var adapterOptions = {};
+      if (window.McAdvisorData) {
+        if (window.location.protocol === 'file:' && typeof McAdvisorData.OfflineAdapter === 'function') {
+          state.adapter = new McAdvisorData.OfflineAdapter(state.activeSlot ? { slot: state.activeSlot } : {});
+          state.degraded = true;
+          state.degradeReason = '双击打开使用离线快照，不会发起网络请求。';
+        } else if (typeof McAdvisorData.detectAdapter === 'function') {
+          var detected = await McAdvisorData.detectAdapter();
+          state.adapter = detected.adapter || null;
+          state.degraded = !!detected.degraded;
+          state.degradeReason = detected.reason || '';
+        }
+      } else {
+        state.degraded = true;
+        state.degradeReason = '数据适配器文件未随当前工作区提供。';
+      }
+      if (state.adapter) adapterOptions.adapter = state.adapter;
+      if (state.activeSlot) adapterOptions.slot = state.activeSlot;
+      S = McAdvisor.createService(adapterOptions);
       await readServiceSnapshot();
       initRotation();
     } catch (error) {

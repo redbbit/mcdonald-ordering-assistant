@@ -240,6 +240,45 @@ input[type=number]::-webkit-inner-spin-button { opacity: .45; }
 .trust-footer span { line-height: 1.5; }
 button { min-height: 44px; }
 input[type="number"], input[type="text"] { min-height: 44px; }
+.split-panel { margin: 12px 0 28px; padding: 18px; border: 1px solid rgba(99, 57, 30, .16); border-radius: 15px; background: #fffaf1; box-shadow: 0 14px 38px rgba(81, 44, 22, .1); }
+.split-heading { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; }
+.split-heading h3 { margin:4px 0 14px; color:#472719; font-size:21px; }
+.split-controls { display:flex; flex-wrap:wrap; gap:12px; margin:8px 0 14px; }
+.split-controls label, .split-member { display:flex; flex-direction:column; gap:5px; color:#634832; font-size:13px; font-weight:700; }
+.split-controls select, .split-controls input, .split-member input { min-height:44px; padding:8px 11px; border:1px solid #dfc7ad; border-radius:9px; background:#fff; color:#35251a; font:inherit; }
+.split-controls select { min-width:185px; }
+.split-controls input { width:100px; }
+.split-members { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
+.split-member { padding:10px; border:1px solid #ecdac5; border-radius:10px; background:#fff; }
+.split-item-row { display:grid; grid-template-columns:minmax(130px,1fr) 2fr; align-items:center; gap:12px; padding:9px 0; border-bottom:1px solid #ead9c7; color:#55351f; }
+.split-item-row select { min-height:42px; border:1px solid #dfc7ad; border-radius:8px; background:#fff; }
+.split-foot { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:14px; color:#806851; font-size:13px; }
+.split-result { display:grid; grid-template-columns:repeat(auto-fit,minmax(155px,1fr)); gap:9px; margin-top:14px; }
+.split-result-card { padding:12px; border-radius:10px; background:#fff; border:1px solid #ead9c7; }
+.split-result-card strong { display:block; margin-bottom:4px; color:#562919; font-size:20px; }
+.split-result-note { grid-column:1/-1; margin:0; padding:10px 12px; border-radius:9px; background:#fff2d7; color:#774b15; }
+@media (max-width:640px) { .split-panel { padding:13px; } .split-controls { display:grid; grid-template-columns:1fr 1fr; } .split-controls select { min-width:0; width:100%; } .split-foot { align-items:stretch; flex-direction:column; } .split-foot button { width:100%; } .split-item-row { grid-template-columns:1fr; gap:5px; } }
+.projector-toggle { min-height:44px; padding:0 13px; border:1px solid #d8b59a; border-radius:999px; background:#fff5e5; color:#692d20; font-weight:800; cursor:pointer; }
+.meta-dot-offline { background:#d28a23 !important; box-shadow:0 0 0 4px rgba(210,138,35,.15) !important; }
+.stock-unknown, .stock-soldout, .stock-available { display:block; margin-top:4px; font-size:10px; font-weight:700; }
+.stock-unknown { color:#817b72; }
+.stock-soldout { color:#a52924; }
+.stock-available { color:#176647; }
+.source-pill { align-self:center; padding:5px 8px; border-radius:99px; font-size:11px; font-weight:800; white-space:nowrap; }
+.simulated-pill { color:#80520e; background:#fff0c8; }
+.live-pill { color:#176647; background:#dff3e7; }
+.offline-notice { border-color:#e7c578 !important; background:#fff4d6 !important; color:#704a10 !important; }
+.offline-notice strong { margin-right:5px; }
+body.projector-mode { font-size:1.14em; }
+body.projector-mode .topbar { padding-block:20px; }
+body.projector-mode .top-meta, body.projector-mode .trust-footer, body.projector-mode .hero-source, body.projector-mode .plan-subtitle, body.projector-mode .plan-why { font-size:1.06em; }
+body.projector-mode .intro-block h1 { font-size:clamp(42px,5vw,68px); }
+body.projector-mode .hero-product-line h2 { font-size:clamp(38px,4.2vw,61px); }
+body.projector-mode .hero-price strong, body.projector-mode .plan-price { font-size:1.35em; }
+body.projector-mode .plan-card { border-width:2px; }
+body.projector-mode button, body.projector-mode input, body.projector-mode select { font-size:1.06em; }
+body.projector-mode .message p, body.projector-mode .campaign-card p { font-size:1.1em; line-height:1.55; }
+@media (max-width:640px) { .projector-toggle { padding-inline:9px; font-size:11px; } .source-pill { white-space:normal; } }
 .brand { min-height: 44px; }
 
 /* Coupon drawer */

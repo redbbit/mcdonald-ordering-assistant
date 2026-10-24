@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f4efe5">
   <meta name="description" content="按人数、预算与口味，搭配三份麦当劳个性化套餐。商品与活动数据来自麦当劳官方 MCP 快照。">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; font-src 'self' data:; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self' data:; base-uri 'none'; form-action 'none'">
   <title>麦麦搭配所 · 今天吃点好的</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -19,6 +19,7 @@
       <div class="topbar-tools">
         <div class="top-meta" id="metaLine" aria-live="polite"><span class="meta-dot"></span><span>正在读取门店快照…</span></div>
         <label class="slot-switch"><span>菜单时段</span><select id="slotSelector" aria-label="切换菜单时段" disabled><option>读取快照…</option></select></label>
+        <button class="projector-toggle" id="projectorToggle" type="button" aria-pressed="false">投屏大字</button>
       </div>
     </header>
 
@@ -86,8 +87,16 @@
           <div class="plan-grid" id="planGrid"></div>
           <div class="selection-bar" id="selectionBar" hidden>
             <div><strong id="selectedCount">已选 0 份</strong><span>清单会列出菜品与金额，不会替你下单</span></div>
-            <div class="selection-actions"><button type="button" class="outline-button" id="calculateSelected">算这一单</button><button type="button" class="primary-small" id="summarySelected">生成小程序下单清单 <span aria-hidden="true">↗</span></button></div>
+            <div class="selection-actions"><button type="button" class="outline-button" id="calculateSelected">算这一单</button><button type="button" class="outline-button" id="splitSelected">分账</button><button type="button" class="primary-small" id="summarySelected">生成小程序下单清单 <span aria-hidden="true">↗</span></button></div>
           </div>
+          <section class="split-panel" id="splitPanel" hidden aria-labelledby="splitTitle">
+            <div class="split-heading"><div><span class="section-kicker">SPLIT THIS MEAL</span><h3 id="splitTitle">把这一单分清楚</h3></div><button type="button" class="icon-close" id="closeSplit" aria-label="关闭分账面板">×</button></div>
+            <div class="split-controls"><label>分账方案<select id="splitPlan"></select></label><label>分账口径<select id="splitMode"><option value="even">人均等分</option><option value="byItem">按菜品归属</option><option value="byWeight">按权重分摊</option></select></label><label>参与人数<input id="splitMembers" type="number" min="1" max="12" value="2"></label></div>
+            <div class="split-members" id="splitMembersList"></div>
+            <div class="split-items" id="splitItemsList" hidden></div>
+            <div class="split-foot"><span id="splitStatus">选择一个方案后即可计算分账。</span><button type="button" class="primary-small" id="runSplit">计算分账</button></div>
+            <div class="split-result" id="splitResult" hidden aria-live="polite"></div>
+          </section>
           <div class="summary-output" id="summaryOutput" hidden>
             <div class="summary-head"><strong>带去小程序的点单清单</strong><button type="button" id="copySummary">复制清单</button><button type="button" class="icon-close" id="closeSummary" aria-label="关闭清单">×</button></div>
             <pre id="summaryText"></pre>
@@ -141,6 +150,7 @@
   <script src="data/menu_data_night.js"></script>
   <script src="data/campaigns.js"></script>
   <script src="engine.js"></script>
+  <script>if (window.location.protocol !== 'file:') document.write('<script src="lib/data_adapter.js"><\/script>');</script>
   <script src="service.js"></script>
   <script src="app.js"></script>
 </body>
