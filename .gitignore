@@ -9,6 +9,7 @@ mcp.json
 tools/__pycache__/
 __pycache__/
 *.pyc
+img/.orig/
 
 # 本地演示无关文件
 *.log

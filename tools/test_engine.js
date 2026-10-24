@@ -72,6 +72,134 @@ CASES.forEach(c => {
   check(r.plans.length === 3, `方案数应为 3，实际 ${r.plans.length}`);
 });
 
+/* ================= 升级项自检（问题一/三/四） ================= */
+console.log('\n' + '='.repeat(78));
+console.log('升级项自检：目标匹配 / 套餐对比 / 拆单用券 / 点名菜');
+console.log('='.repeat(78));
+
+/* ---- 问题三：口语目标匹配 ---- */
+console.log('\n■ 目标匹配（口语扩容 + 打分制）');
+const GOAL_CASES = [
+  ['想吃得满足一点', 'full'],
+  ['三个人想吃点性价比高的', 'cheap'],
+  ['减脂期，想少长肉', 'lose'],
+  ['增肌，多点蛋白质', 'bulk'],
+  ['没吃过的新品想尝尝鲜', 'new'],
+  ['带孩子随便吃点', 'kid'],
+  ['请客吃饭要体面', 'treat'],
+  ['均衡一点就行', 'balance'],
+  ['今天天气还不错', null]
+];
+GOAL_CASES.forEach(([text, key]) => {
+  const g = E.normGoal(text);
+  check(key === null ? g.custom === true : (g.key === key && g.custom === false),
+    `目标匹配「${text}」应为 ${key || 'custom(未识别)'}，实得 ${g.key}${g.custom ? '(custom)' : ''}`);
+  if (key) {
+    const m = E.matchGoal(text);
+    check(m.hits.length > 0, `「${text}」应有命中词记录`);
+  }
+  console.log(`   「${text}」 → ${g.key === 'custom' ? '未识别·按均衡' : g.name}（${g.kcal} kcal/人）`);
+});
+check(E.normGoal('').key === 'balance', '空目标应落均衡');
+
+/* ---- 问题四：套餐 vs 散件 ---- */
+console.log('\n■ 套餐 vs 散件对比');
+const byCode = {};
+D.dishes.forEach(d => { byCode[d.code] = d; });
+const combos = D.dishes.filter(d => d.role === 'combo' && d.parts && d.parts.length);
+check(combos.length > 0, '菜单里应有带子项的套餐');
+let comboChecked = 0, comboNull = 0, comboSaveSum = 0;
+combos.forEach(c => {
+  const b = E.comboBreakdown(c, byCode);
+  if (b === null) { comboNull++; return; }        // 子项对不上价 → 诚实返回 null，不是错
+  comboChecked++;
+  check(Math.abs(b.save - (b.partsTotal - b.comboPrice)) < 0.011, `套餐 ${c.name} save 口径应自洽`);
+  check(b.partsKnown >= 1 && b.partsKnown <= b.partsCount, `套餐 ${c.name} 已知子项数应合理`);
+  if (b.save > 0) comboSaveSum += b.save;
+});
+console.log(`   ${comboChecked} 份套餐可拆解（${comboNull} 份子项无价返回 null），省钱的合计 ¥${comboSaveSum.toFixed(2)}`);
+check(E.comboBreakdown(D.dishes.find(d => d.role !== 'combo'), byCode) === null, '非套餐应返回 null');
+check(E.comboBreakdown(combos[0], {}) === null, '查不到子项价应返回 null，不编数');
+
+/* ---- 问题一：券面规则解析 ---- */
+console.log('\n■ 优惠券规则解析');
+const RULE_CASES = [
+  ['免费脆薯饼', r => r.kind === 'free' && r.item === '脆薯饼'],
+  ['11.9元麦辣鸡腿堡', r => r.kind === 'fixed' && r.price === 11.9 && r.item === '麦辣鸡腿堡'],
+  ['19.9元王牌炸鸡任选2', r => r.kind === 'fixed' && r.price === 19.9],
+  ['满30减5', r => r.kind === 'threshold' && r.minSpend === 30 && r.cut === 5],
+  ['满 40 元减 8 元', r => r.kind === 'threshold' && r.minSpend === 40 && r.cut === 8],
+  ['这是什么鬼券', r => r.kind === 'unknown']
+];
+RULE_CASES.forEach(([title, ok]) => {
+  const r = E.parseCouponRule(title);
+  check(ok(r), `券面「${title}」解析结果不对：${JSON.stringify(r)}`);
+});
+const ml = D.dishes.find(d => d.name === '麦辣鸡腿汉堡');
+check(E.matchCouponDish(E.parseCouponRule('11.9元麦辣鸡腿堡'), D.dishes) === ml,
+  '「11.9元麦辣鸡腿堡」应对上「麦辣鸡腿汉堡」（差一个汉字的前缀匹配）');
+check(E.estimateCouponCut(E.parseCouponRule('11.9元麦辣鸡腿堡'), ml, 100) === 10.6,
+  '固定价券收益应为 22.5-11.9=10.6');
+check(E.estimateCouponCut(E.parseCouponRule('满30减5'), null, 25) === 0, '不满门槛应 0');
+check(E.estimateCouponCut(E.parseCouponRule('满30减5'), null, 35) === 5, '满门槛应减 5');
+check(E.estimateCouponCut(E.parseCouponRule('这是什么鬼券'), ml, 100) === 0, '认不出的券收益 0');
+
+/* ---- 问题一：拆单 + 分钱 + 券分配 ---- */
+console.log('\n■ 多人拆单与券分配');
+const items = [
+  { code: 'a', name: 'A餐', price: 10, qty: 1 },
+  { code: 'b', name: 'B餐', price: 20, qty: 1 },
+  { code: 'c', name: '公共薯条', price: 10.01, qty: 1 }
+];
+const members = [{ name: '甲' }, { name: '乙' }];
+const built = E.buildSubOrders(items, members, [[0], [1], []]);
+check(built.subOrders.length === 2, '应拆出 2 单');
+// 归属：A(10)→甲，B(20)→乙，公共薯条(10.01) 均摊 → 甲 15.005 / 乙 25.005，
+// 最大余额法补分后：甲 ¥15.01、乙 ¥25.00，总额 ¥40.01 严格相等
+check(Math.abs(built.subOrders[0].subtotal - 15.01) < 0.011, `甲应付 15.01，实得 ${built.subOrders[0].subtotal}`);
+check(Math.abs(built.subOrders[1].subtotal - 25.00) < 0.011, `乙应付 25.00，实得 ${built.subOrders[1].subtotal}`);
+check(Math.abs(built.total - 40.01) < 0.005, `总额应严格相等 40.01，实得 ${built.total}`);
+check(built.balanced === true, '拆单必须平衡');
+check(built.subOrders[0].items.some(i => i.shared === true), '甲的单里应有公共项标记');
+const built2 = E.buildSubOrders(items, members, null);
+check(Math.abs(built2.subOrders[0].subtotal + built2.subOrders[1].subtotal - 40.01) < 0.005,
+  '无归属时全部按公共项均分，总额仍须严格相等');
+check(built2.subOrders.every(s => s.items.every(i => i.shared === true)), '无归属时每项都应是公共项');
+const subs = [
+  { name: '甲', subtotal: 10 }, { name: '乙', subtotal: 20 }, { name: '丙', subtotal: 35 }
+];
+const couponPool = [
+  { title: '满15减3' }, { title: '满30减5' }, { title: '免费脆薯饼' }
+];
+const opt = E.optimizeCoupons(subs, couponPool, D.dishes);
+check(opt.totalCut > 0, '应估算出券收益');
+check(subs.filter(s => s.coupon).length >= 1, '至少一单分到券');
+check(subs.every(s => !s.coupon || s.payAfterCoupon >= 0), '用券后不能为负');
+const usedTitles = subs.filter(s => s.coupon).map(s => s.coupon.title);
+check(new Set(usedTitles).size === usedTitles.length, '同一张券不能用两次');
+console.log(`   拆单 ¥${built.total}｜券分配后收益估算 ¥${opt.totalCut}｜分到：${usedTitles.join('、') || '无'}`);
+
+/* ---- 问题五配套：点名菜进方案 ---- */
+console.log('\n■ 点名菜（「想吃巨无霸」必须出现）');
+const rw = E.makePlans({ dishes: D.dishes, people: 2, bmax: 120, goal: '均衡就好', wanted: ['巨无霸'], seed: 20261024 });
+if (!rw.error) {
+  rw.plans.forEach(p => {
+    check(p.items.some(i => i.d.name.indexOf('巨无霸') >= 0), `${p.k} 版应包含巨无霸`);
+  });
+  check(rw.wanted.some(w => w.name === '巨无霸' && w.reason === ''), '点名菜应解析成功');
+  console.log(`   三版均含巨无霸：${rw.plans.map(p => p.items.filter(i => i.d.name.includes('巨无霸')).map(i => i.d.name).join('+')).join(' | ')}`);
+} else { check(false, '带点名菜的配餐不应报错'); }
+const rw2 = E.makePlans({ dishes: D.dishes, people: 1, bmax: 20, goal: '', wanted: ['巨无霸'], seed: 20261024 });
+if (!rw2.error) {
+  check(rw2.plans.every(p => p.unmetWanted.length > 0 || p.items.some(i => i.d.name.includes('巨无霸'))),
+    '预算不够时要如实记录 unmetWanted');
+  console.log(`   20 元预算点巨无霸：unmet=${JSON.stringify(rw2.plans[0].unmetWanted)}`);
+} else { console.log('   ⚠️ 20 元预算整体无方案（已知边界）'); }
+const rw3 = E.makePlans({ dishes: D.dishes, people: 1, bmax: 60, goal: '', avoid: ['辣'], wanted: ['麦辣鸡腿汉堡'], seed: 20261024 });
+check(!rw3.error && rw3.wanted.some(w => w.name === '麦辣鸡腿汉堡' && w.reason === 'avoid'),
+  '忌口挡住点名菜时应记录 reason=avoid');
+console.log(`   忌辣又点麦辣鸡腿汉堡：${JSON.stringify(rw3.wanted)}`);
+
 console.log('\n' + '='.repeat(78));
 console.log(fail === 0 ? '✅ 全部断言通过' : `❌ ${fail} 条断言失败`);
 if (warned) console.log(`   另有 ${warned} 处已知边界（极端预算下的降级，已在上方 ⚠️ 标出）`);

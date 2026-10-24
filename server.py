@@ -311,13 +311,19 @@ def handle_price(payload):
         raise McpError("items 不能为空", code="bad_request", status=400)
 
     # orderType / beType 是必填：1 = 到店，1 = 到店取餐。漏传官方会返回 success:false
+    # couponCode 是官方 calculate-price 的逐项入参（优惠券code），有就透传——
+    # 以前这里没收发它，前端发了也被丢掉，在线试券永远是假戏。
     args = {
         "storeCode": store,
         "orderType": int(payload.get("orderType") or 1),
         "beType": int(payload.get("beType") or 1),
-        "items": [{"productCode": it.get("code"), "quantity": int(it.get("qty") or 1)}
-                  for it in items],
+        "items": [],
     }
+    for it in items:
+        row = {"productCode": it.get("code"), "quantity": int(it.get("qty") or 1)}
+        if it.get("couponCode"):
+            row["couponCode"] = it["couponCode"]
+        args["items"].append(row)
     parsed = parse_calc_price(call_tool("calculate-price", args))
     if not parsed["ok"]:
         # 官方明确的失败语义，直接映射给前端，不要包装成成功

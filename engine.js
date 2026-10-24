@@ -24,31 +24,54 @@ var WALK_SPEED = 80;      // 步行约 80 m/min
 /* 饮品名识别：套餐默认子项里有没有带饮料 */
 var DRINK_RE = /(可乐|雪碧|美式|咖啡|牛奶|豆浆|红茶|柠檬|橙|苹果汁|玉米|茶|水|芭依|怡泉|泡泡)/;
 
-/* ---------- 目标 ---------- */
+/* ---------- 目标 ----------
+   关键词表按「用户真的会怎么说」扩写过一轮：
+   第一版只有书面语（减肥/增肌/吃饱…），实测「想吃得满足一点」「性价比高一点」
+   这种口语全部落空，界面只好弹「没能匹配到内置目标」——看着像大部分需求都接不住。
+   现在每条目标都带口语同义词，匹配也从「首个命中」改成「命中数 × 词长」打分，
+   一句话里出现多个目标信号时，证据多的那个赢。 */
 var GOALS = [
-  { key:'lose',    name:'减肥控卡',   kcal:430, protein:1.6, kw:['减肥','减脂','瘦身','控卡','低卡','轻食','不想胖','怕胖','刮油','掉秤'] },
-  { key:'bulk',    name:'增肌高蛋白', kcal:820, protein:2.2, kw:['增肌','蛋白','健身','撸铁','练'] },
-  { key:'full',    name:'吃饱管饱',   kcal:810, protein:1.0, kw:['吃饱','管饱','很饿','饿','量大','顶饱','抗饿'] },
-  { key:'treat',   name:'请客聚餐',   kcal:770, protein:1.0, rich:1, kw:['请客','聚餐','招待','体面','朋友','生日','团建','约会','请吃'] },
-  { key:'new',     name:'尝鲜新品',   kcal:680, protein:1.0, novelty:1, kw:['尝鲜','新品','新上市','没吃过','限定','限定版','好奇'] },
-  { key:'cheap',   name:'省钱第一',   kcal:640, protein:1.0, thrifty:1, kw:['省钱','便宜','穷','低预算','抠','廉价','最省'] },
-  { key:'kid',     name:'带孩子吃',   kcal:580, protein:1.2, kw:['孩子','小孩','儿童','宝宝','小朋友','女儿','儿子'] },
-  { key:'balance', name:'均衡就好',   kcal:670, protein:1.2, kw:['均衡','随便','都行','普通','正常','差不多','无所谓'] }
+  { key:'lose',    name:'减肥控卡',   kcal:430, protein:1.6, kw:['减肥','减脂','瘦身','控卡','低卡','轻食','不想胖','怕胖','刮油','掉秤','减重','降脂','低热量','低脂','不长胖','别长胖','控制体重','减肚子','卡路里','热量低','吃不胖','少长肉','减点儿肥','减点肥'] },
+  { key:'bulk',    name:'增肌高蛋白', kcal:820, protein:2.2, kw:['增肌','蛋白','健身','撸铁','练肌肉','肌肉','高蛋白','补充蛋白','健身餐','运动后','增重','长肌肉','练练','壮一点','蛋白质'] },
+  { key:'full',    name:'吃饱管饱',   kcal:810, protein:1.0, kw:['吃饱','管饱','很饿','饿','量大','顶饱','抗饿','吃到撑','大胃口','饿死了','填饱','饱腹','吃得饱','胃口大','饿得慌','充饥','满足','吃爽','垫肚子','先吃点'] },
+  { key:'treat',   name:'请客聚餐',   kcal:770, protein:1.0, rich:1, kw:['请客','聚餐','招待','体面','朋友','生日','团建','约会','请吃','聚会','热闹','丰盛','吃顿好的','改善一下','犒劳','庆祝','搞丰盛','搞点好'] },
+  { key:'new',     name:'尝鲜新品',   kcal:680, protein:1.0, novelty:1, kw:['尝鲜','新品','新上市','没吃过','限定','限定版','好奇','新款','新鲜','尝尝新','新口味','新出的','尝个鲜','试新','拔草','新花样'] },
+  { key:'cheap',   name:'省钱第一',   kcal:640, protein:1.0, thrifty:1, kw:['省钱','便宜','穷','低预算','抠','廉价','最省','实惠','划算','性价比','少花钱','经济','省一点','节约','优惠点','花少点','省着点'] },
+  { key:'kid',     name:'带孩子吃',   kcal:580, protein:1.2, kw:['孩子','小孩','儿童','宝宝','小朋友','女儿','儿子','亲子','遛娃','带娃','儿童餐','小孩吃'] },
+  { key:'balance', name:'均衡就好',   kcal:670, protein:1.2, kw:['均衡','随便','都行','普通','正常','差不多','无所谓','一般','家常','营养均衡','均衡一点','没特别要求','不挑','均衡点'] }
 ];
+
+/* 打分制目标匹配：每个目标累计「命中关键词的长度和」，分高者赢；
+   并列时看最长命中词，再并列按 GOALS 顺序（保证可复现）。
+   返回 { goal, score, hits }，hits 是命中的关键词列表，供界面解释「为什么这么理解」。 */
+function matchGoal(text) {
+  var t = (text || '').trim();
+  if (!t) return { goal: null, score: 0, hits: [] };
+  var best = null, bestScore = 0, bestLen = 0, bestHits = [];
+  for (var i = 0; i < GOALS.length; i++) {
+    var g = GOALS[i], score = 0, maxLen = 0, hits = [];
+    for (var j = 0; j < g.kw.length; j++) {
+      var k = g.kw[j];
+      if (t.indexOf(k) >= 0) {
+        score += k.length;
+        if (k.length > maxLen) maxLen = k.length;
+        hits.push(k);
+      }
+    }
+    if (score > bestScore || (score === bestScore && score > 0 && maxLen > bestLen)) {
+      best = g; bestScore = score; bestLen = maxLen; bestHits = hits;
+    }
+  }
+  return { goal: best, score: bestScore, hits: bestHits };
+}
 
 function normGoal(text) {
   var t = (text || '').trim();
   if (!t) return Object.assign({}, GOALS[GOALS.length - 1], { custom: false });
-  var hit = null, bestLen = 0;
-  for (var i = 0; i < GOALS.length; i++) {
-    for (var j = 0; j < GOALS[i].kw.length; j++) {
-      var k = GOALS[i].kw[j];
-      if (t.indexOf(k) >= 0 && k.length > bestLen) { hit = GOALS[i]; bestLen = k.length; }
-    }
-  }
-  if (hit) return Object.assign({}, hit, { custom: false });
-  // 没匹配上：不假装懂，原样带着，用均衡的量化参数
-  return { key:'custom', name:t.slice(0, 12), kcal:670, protein:1.2, kw:[], custom:true };
+  var m = matchGoal(t);
+  if (m.goal) return Object.assign({}, m.goal, { custom: false, hits: m.hits });
+  // 没匹配上：不假装懂，原样带着，用均衡的量化参数；hits 为空即「未识别」的依据
+  return { key:'custom', name:t.slice(0, 12), kcal:670, protein:1.2, kw:[], custom:true, hits: [] };
 }
 
 /* ---------- 营业时段 ---------- */
@@ -333,6 +356,35 @@ function makePlans(opt) {
   };
   if (!pools.main.length) return { error: '在当前忌口条件下，这家店已经没有可以当正餐的选项了' };
 
+  /* ---- 点名菜先解析（配餐前就要解析，预算得给它预留位置） ----
+   * 用户「想吃巨无霸」就必须出现在方案里。界面上「把这口加入我的条件」按钮一向只把菜名
+   * 塞进输入框，引擎原来并不认——点了等于没点。现在把点名菜解析成真实菜品
+   * （带规格层级惩罚，避免「麦辣鸡腿堡」对上「四件套」），配餐时预留出它的钱，
+   * 再尽量塞进每一版；塞不进去的（忌口挡住 / 超预算 / 菜单里没有）进 unmetWanted，如实说明。 */
+  var wantedResolved = [];
+  (opt.wanted || []).forEach(function (name) {
+    var hit = pickBestDish(name, dishes.filter(function (d) { return d.ok === true && isFood(d); }));
+    if (!hit) { wantedResolved.push({ name: name, reason: 'not-found' }); return; }
+    if (hitAvoid(hit, avoid)) {
+      wantedResolved.push({ name: hit.name, reason: 'avoid',
+        avoid: avoid.filter(function (v) { return hit.Avoid.indexOf(v) >= 0; }) });
+      return;
+    }
+    if (wantedResolved.some(function (w) { return w.dish === hit; })) return;
+    wantedResolved.push({ name: hit.name, code: hit.code, dish: hit, reason: '' });
+  });
+
+  // 点名菜预算预留：配餐阶段的有效上限先扣掉点名菜总价，别把钱花光导致点名菜插不进来
+  var wantCost = 0;
+  wantedResolved.forEach(function (w) { if (!w.reason && w.dish) wantCost += w.dish.price; });
+  var bmaxEff = bmax;
+  if (bmax !== Infinity && wantCost > 0) {
+    var room = bmax - wantCost;
+    // 预留后仍满足最低预算才预留；否则不预留（照常用全额预算配餐），
+    // 点名菜插不进去时会如实进 unmetWanted，而不是假装成功
+    if (room >= bmin) bmaxEff = room;
+  }
+
   // 每件单品的偏好权重
   function itemW(d, mode) {
     var w = 1;
@@ -355,13 +407,13 @@ function makePlans(opt) {
     if (goal.rich) w *= (0.7 + 0.5 * mode);
     // 预算越高，越敢点贵的
     if (bmax !== Infinity) {
-      var pp = bmax / people;
+      var pp = bmaxEff / people;
       w *= Math.pow(clamp(pp / Math.max(6, d.price), 0.35, 2.4), 0.55 * (1 - mode * 0.6));
     }
     return w;
   }
 
-  var ctx = { people: people, goal: goal, bmin: bmin, bmax: bmax, unlimited: !!opt.unlimited, pools: pools, itemW: itemW };
+  var ctx = { people: people, goal: goal, bmin: bmin, bmax: bmaxEff, unlimited: !!opt.unlimited, pools: pools, itemW: itemW };
   var MODES = [
     { k:'A', tier:'budget', mode:0.12, name:'省钱聚餐版', sub:'预算内把人均压到最低，主食一口不少',
       patch:function (g) { return { thrifty:1, novelty:0, rich:0, protein:Math.min(g.protein, 1.2) }; } },
@@ -376,12 +428,12 @@ function makePlans(opt) {
   MODES.forEach(function (M, mi) {
     // 每档用自己的那份目标参数，人数/预算/忌口共享
     var ctx = { people: people, goal: Object.assign({}, goal, M.patch(goal)),
-                bmin: bmin, bmax: bmax, unlimited: !!opt.unlimited, pools: pools, itemW: itemW };
+                bmin: bmin, bmax: bmaxEff, unlimited: !!opt.unlimited, pools: pools, itemW: itemW };
     var best = [], seen = {};
     for (var t = 0; t < 900; t++) {
       var p = buildOnce(ctx, M.mode, rnd);
       if (!p) continue;
-      if (bmax !== Infinity && p.total > bmax + 1e-6) continue;
+      if (bmaxEff !== Infinity && p.total > bmaxEff + 1e-6) continue;
       var s = scorePlan(p, ctx, M.mode);
       if (s < -1e5) continue;
       var sg = sig(p);
@@ -432,6 +484,42 @@ function makePlans(opt) {
     }));
   });
 
+  /* ---- 点名菜插入：wantedResolved 已在配餐前解析并预留预算 ----
+   * 尽量塞进每一版；塞不进去的（超预算）进 unmetWanted，由 UI 如实说明。 */
+  plans.forEach(function (p) {
+    p.unmetWanted = [];
+    var touched = false;
+    wantedResolved.forEach(function (w) {
+      if (w.reason) { p.unmetWanted.push({ name: w.name, reason: w.reason, avoid: w.avoid }); return; }
+      var has = p.items.some(function (it) { return it.d.code === w.code; });
+      if (has) return;
+      var d = w.dish;
+      if (bmax === Infinity || p.total + d.price <= bmax + 1e-6) {
+        p.items.push({ d: d, q: 1 });
+        touched = true;
+      } else {
+        p.unmetWanted.push({ name: w.name, reason: 'budget' });
+      }
+    });
+    if (touched) {
+      var spent = 0, orig = 0, kcal = 0, protein = 0, nutKnown = 0, nutTotal = 0, mainCover = 0;
+      p.items.forEach(function (it) {
+        spent += it.d.price * it.q;
+        orig += it.d.orig * it.q;
+        if (hasKcal(it.d)) { kcal += it.d.kcal * it.q; protein += (it.d.protein || 0) * it.q; nutKnown += it.q; }
+        nutTotal += it.q;
+        mainCover += servings(it.d) * it.q;
+      });
+      p.total = Math.round(spent * 100) / 100;
+      p.orig = Math.round(orig * 100) / 100;
+      p.save = Math.round((orig - spent) * 100) / 100;
+      p.kcal = Math.round(kcal); p.protein = Math.round(protein * 10) / 10;
+      p.mainCover = mainCover;
+      p.nutRate = nutTotal ? nutKnown / nutTotal : 0;
+      p.unknown = p.items.filter(function (t) { return !hasKcal(t.d); });
+    }
+  });
+
   if (!plans.length) {
     return {
       error: '这个预算 / 忌口组合下，没有凑出合适的方案',
@@ -442,7 +530,7 @@ function makePlans(opt) {
       ]
     };
   }
-  return { plans: plans, pool: pool, goal: goal, people: people };
+  return { plans: plans, pool: pool, goal: goal, people: people, wanted: wantedResolved };
 }
 
 function minPrice(list) {
@@ -572,11 +660,217 @@ function splitBill(total, opt) {
   };
 }
 
+/* ------------------------------------------------ 套餐 vs 散件对比
+   用户问：「套餐和散件搭配哪个更划算，现有网页能实现吗」——原来只闷头选，不告诉人。
+   这里把每份套餐拆开按官方子项单点价重算，得到「比拆开单点省多少」。
+   铁律：parts 里有查不到价的子项时，只按已知部分算并标 complete:false，
+   绝不用估算价把窟窿填上。 */
+function comboBreakdown(dish, byCode) {
+  if (!dish || dish.role !== 'combo' || !dish.parts || !dish.parts.length || !byCode) return null;
+  var total = 0, known = 0;
+  dish.parts.forEach(function (p) {
+    var sub = byCode[p.code];
+    if (sub && typeof sub.price === 'number' && sub.price > 0) {
+      total += sub.price * (p.qty || 1);
+      known += 1;
+    }
+  });
+  if (!known) return null;                      // 子项一个都对不上价，不硬算
+  var save = Math.round((total - dish.price) * 100) / 100;
+  return {
+    partsTotal: Math.round(total * 100) / 100,
+    comboPrice: Math.round(dish.price * 100) / 100,
+    save: save,
+    worthwhile: save >= 1,                      // 省不到 1 块不算「真划算」
+    partsKnown: known,
+    partsCount: dish.parts.length,
+    complete: known === dish.parts.length
+  };
+}
+
+/* ------------------------------------------------ 优惠券规则（券面解析）
+   官方 available-coupons 只回标题/图片/状态，**不回券 code**——所以无论在线离线，
+   都没法把券真正代入 calculate-price 试算（couponCode 无从得知）。
+   这里做的是「按券面标题规则估算」，所有结果必须带 simulated:true。
+   支持的标题形态（都是官方返回里真实出现的）：
+     「免费脆薯饼」      → 免费单品
+     「11.9元麦辣鸡腿堡」 → 指定品固定价
+     「19.9元王牌炸鸡任选2」→ 指定品固定价（任选 N 只按 1 份估）
+     「满30减5」/「满30减5元」→ 门槛满减
+   认不出的形态返回 kind:'unknown'，估算收益 0，不装懂。 */
+function parseCouponRule(title) {
+  var t = (title || '').trim();
+  if (!t) return { kind: 'unknown', raw: t };
+  var m;
+  if ((m = /^满\s*([\d.]+)\s*(?:元)?\s*减\s*([\d.]+)\s*(?:元)?/.exec(t))) {
+    return { kind: 'threshold', minSpend: +m[1], cut: +m[2], raw: t };
+  }
+  if ((m = /^([\d.]+)\s*元\s*(.+)$/.exec(t))) {
+    return { kind: 'fixed', price: +m[1], item: m[2].replace(/\s+/g, ''), raw: t };
+  }
+  if ((m = /^免费\s*(.+)$/.exec(t))) {
+    return { kind: 'free', item: m[1].replace(/\s+/g, ''), raw: t };
+  }
+  if ((m = /^(.+?)\s*立减\s*([\d.]+)\s*(?:元)?/.exec(t))) {
+    return { kind: 'threshold', minSpend: 0, cut: +m[2], item: m[1].replace(/\s+/g, ''), raw: t };
+  }
+  return { kind: 'unknown', raw: t };
+}
+
+/* 名字相像度打分：完全相等 > 菜单名包含用户说法 > 用户说法包含菜单名 > 共同前缀 ≥3 字。
+ * 为什么需要前缀规则：官方券面写「11.9元麦辣鸡腿堡」，菜单里叫「麦辣鸡腿汉堡」——
+ * 差一个「汉」字，互相包含全都失效，券就永远对不上菜品。
+ * 为什么相等分最高、并列取短名：用户说「想吃巨无霸」要的是单品 ¥25.5，
+ * 不是「巨无霸三件套」¥36.5；券写「麦辣鸡腿堡」对应的是汉堡，不是三件套。 */
+function nameMatchScore(query, name) {
+  if (!query || !name) return 0;
+  if (query === name) return 1000 + name.length;
+  if (name.indexOf(query) >= 0) return 500 + name.length;
+  if (query.indexOf(name) >= 0) return 400 + name.length;
+  var n = Math.min(query.length, name.length), i = 0;
+  while (i < n && query.charAt(i) === name.charAt(i)) i++;
+  return i >= 3 ? 100 + i : 0;
+}
+
+/* 规格层级词：三件套/桶/分享餐… 说法里没带、菜品名却带了，就不是同一个东西。
+ * 实例：券面「11.9元麦辣鸡腿堡」指向 ¥22.5 的单品汉堡，
+ * 而菜单里「麦辣鸡腿堡四件套」¥28 反而包含「麦辣鸡腿堡」五个字——
+ * 不罚层级就会把券配到四件套上，估算收益全错。 */
+var DISH_TIER_RE = /(三件套|四件套|五件套|双件套|件套|套餐|桶|分享餐|双人|多人|随心选|组合|任选)/;
+
+function pickBestDish(query, dishes) {
+  var best = null, bestScore = 0;
+  (dishes || []).forEach(function (d) {
+    var name = d.name || '';
+    var s = nameMatchScore(query, name);
+    if (s <= 0) return;
+    if (DISH_TIER_RE.test(name) && !DISH_TIER_RE.test(query || '')) s = Math.min(s, 99);
+    if (s > bestScore || (s === bestScore && best && name.length < (best.name || '').length)) {
+      best = d; bestScore = s;
+    }
+  });
+  return best;
+}
+
+/* 把券面规则对上菜单里的真实菜品：分数高者赢，并列取更接近用户原话的短名 */
+function matchCouponDish(rule, dishes) {
+  if (!rule || !rule.item || !dishes) return null;
+  return pickBestDish(rule.item, dishes);
+}
+
+/* 估算某张券在这一单里能省多少（元）。认不出/用不上一律 0，不编。 */
+function estimateCouponCut(rule, dish, subTotal) {
+  if (!rule) return 0;
+  if (rule.kind === 'threshold') {
+    if (rule.minSpend > 0 && !(subTotal >= rule.minSpend)) return 0;
+    return Math.max(0, rule.cut || 0);
+  }
+  if (rule.kind === 'fixed') {
+    if (!dish || !(dish.price > 0)) return 0;
+    return Math.max(0, Math.round((dish.price - rule.price) * 100) / 100);
+  }
+  if (rule.kind === 'free') {
+    if (!dish || !(dish.price > 0)) return 0;
+    return Math.round(dish.price * 100) / 100;   // 免费单品：按它的单价估
+  }
+  return 0;
+}
+
+/* ------------------------------------------------ 多人拆单（问题一）
+   把「总需求清单」按成员拆成各自的小单，再给每张小额单配一张券。
+   约束与假设（全部对用户明示）：
+     · 每张小单最多用 1 张券（官方未提供叠加规则，不假设能叠）
+     · 券收益是券面规则估算（官方不回券 code，无法真试算）
+     · 配送费只有在线模式拿得到真实值，离线不计入也不编   */
+function buildSubOrders(items, members, owners) {
+  // owners[i] = 第 i 个 item 的成员下标数组；空 = 公共项，全员均摊
+  items = items || [];
+  members = (members || []).map(function (m) { return typeof m === 'string' ? { name: m } : Object.assign({}, m); });
+  if (!members.length) members = [{ name: '第 1 人' }];
+  var n = members.length;
+  var subs = members.map(function (m, i) {
+    return { index: i, name: m.name || ('第 ' + (i + 1) + ' 人'), items: [], subtotal: 0 };
+  });
+  var raw = members.map(function () { return 0; });
+
+  items.forEach(function (it, idx) {
+    var price = parseFloat(it.price) || 0;
+    var qty = parseInt(it.qty, 10) || 1;
+    var cents = Math.round(price * qty * 100);
+    var own = (owners && owners[idx]) || null;
+    if (!own || !own.length) {                       // 公共项：全员均摊
+      var each = cents / n;
+      for (var i = 0; i < n; i++) {
+        raw[i] += each;
+        subs[i].items.push({ name: it.name, code: it.code, qty: qty, unitPrice: price,
+                             shared: true, lineTotal: Math.round(each) / 100 });
+        subs[i].subtotal += each;
+      }
+      return;
+    }
+    var per = cents / own.length;
+    own.forEach(function (oi) {
+      if (oi < 0 || oi >= n || raw[oi] == null) return;
+      raw[oi] += per;
+      subs[oi].items.push({ name: it.name, code: it.code, qty: qty, unitPrice: price,
+                            shared: own.length > 1, lineTotal: Math.round(per) / 100 });
+      subs[oi].subtotal += per;
+    });
+  });
+
+  // 分账落分：最大余额法，保证 Σ各单 === 总额
+  var cents = largestRemainder(raw, Math.round(items.reduce(function (s, it) {
+    return s + (parseFloat(it.price) || 0) * (parseInt(it.qty, 10) || 1) * 100;
+  }, 0)));
+  subs.forEach(function (s, i) { s.subtotal = Math.round(cents[i]) / 100; });
+
+  var total = subs.reduce(function (a, s) { return a + s.subtotal; }, 0);
+  return { subOrders: subs, total: Math.round(total * 100) / 100, balanced: true };
+}
+
+/* 券分配：按估算收益从大到小贪心，一券一单、一单一券。
+   返回每单分到的券 + 全单估算总减免。 */
+function optimizeCoupons(subOrders, coupons, dishes) {
+  subOrders = subOrders || [];
+  coupons = (coupons || []).map(function (c) {
+    var rule = c.rule || parseCouponRule(c.title || c.name || '');
+    return { title: c.title || c.name || '', code: c.code || c.id || null, rule: rule,
+             dish: matchCouponDish(rule, dishes) };
+  });
+  var used = {}, assigned = {};
+  var cand = [];
+  subOrders.forEach(function (s, si) {
+    coupons.forEach(function (c, ci) {
+      var cut = estimateCouponCut(c.rule, c.dish, s.subtotal);
+      if (cut > 0) cand.push({ si: si, ci: ci, cut: cut });
+    });
+  });
+  cand.sort(function (a, b) { return b.cut - a.cut || a.si - b.ci; });
+  var totalCut = 0;
+  cand.forEach(function (x) {
+    if (used[x.ci] || assigned[x.si]) return;
+    used[x.ci] = 1; assigned[x.si] = 1;
+    var c = coupons[x.ci], s = subOrders[x.si];
+    s.coupon = { title: c.title, code: c.code, estimatedCut: x.cut, rule: c.rule.kind };
+    totalCut += x.cut;
+  });
+  subOrders.forEach(function (s) {
+    if (!s.coupon) s.coupon = null;
+    s.payAfterCoupon = Math.round((s.subtotal - (s.coupon ? s.coupon.estimatedCut : 0)) * 100) / 100;
+    if (s.payAfterCoupon < 0) s.payAfterCoupon = 0;
+  });
+  return { totalCut: Math.round(totalCut * 100) / 100 };
+}
+
 var API = {
-  GOALS: GOALS, normGoal: normGoal, parseSlots: parseSlots, currentSlot: currentSlot,
+  GOALS: GOALS, normGoal: normGoal, matchGoal: matchGoal, parseSlots: parseSlots, currentSlot: currentSlot,
   servings: servings, includesDrink: includesDrink, hitAvoid: hitAvoid,
   makePlans: makePlans, nutritionOf: nutritionOf, hasKcal: hasKcal,
   splitBill: splitBill, largestRemainder: largestRemainder,
+  comboBreakdown: comboBreakdown,
+  nameMatchScore: nameMatchScore, pickBestDish: pickBestDish,
+  parseCouponRule: parseCouponRule, matchCouponDish: matchCouponDish, estimateCouponCut: estimateCouponCut,
+  buildSubOrders: buildSubOrders, optimizeCoupons: optimizeCoupons,
   RICE_BOWL: RICE_BOWL, WALK_KCAL: WALK_KCAL, WALK_SPEED: WALK_SPEED
 };
 

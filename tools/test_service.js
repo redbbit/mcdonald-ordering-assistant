@@ -167,6 +167,83 @@ console.log('='.repeat(78));
   console.log(`10. 图片总账  ${allLocal.length}/${D.dishes.length} 张官方图落本地`);
   check(allLocal.length === D.dishes.length, '应全部落本地');
 
+  /* ---- 11. 输入冲突检测与双向同步（问题五） ---- */
+  console.log('11. 输入冲突检测');
+  const cq = await S.parseQuery({ text: '三个人，100块以内，想吃麦辣鸡腿堡，不吃辣', people: 2, budgetMax: 200, unlimited: false, avoid: [] }, D.dishes);
+  check(cq.conflicts.length >= 2, `应检出人数+预算两条冲突，实得 ${cq.conflicts.length}`);
+  check(cq.people === 3, '人数应按文本的 3 人生效');
+  check(cq.budgetMax === 100, '预算应按文本的 100 生效');
+  check(cq.resolved.people === 3 && cq.resolved.budgetMax === 100, 'resolved 应给出实际生效值（UI 双向同步用）');
+  check(cq.sources.people === 'text' && cq.sources.budget === 'text', '来源应标记为 text');
+  const avoidConflict = cq.conflicts.find(c => c.field === 'avoid');
+  check(!!avoidConflict && avoidConflict.resolved === 'dropped', '想吃麦辣鸡腿堡又忌辣 → 应记录 dropped');
+  check(cq.wanted.indexOf('麦辣鸡腿堡') < 0, '被忌口挡掉的点名菜不应进 wanted');
+  cq.conflicts.forEach(c => console.log(`   ⚠ ${c.field}: ${c.note}`));
+  const cq2 = await S.parseQuery({ text: '两个人，预算80到120', people: 2, budgetMin: 80, budgetMax: 120, unlimited: false });
+  check(cq2.conflicts.length === 0, '文本与控件一致时不应报冲突');
+  const cq3 = await S.parseQuery({ text: '想吃巨无霸', people: 1, unlimited: true }, D.dishes);
+  check(cq3.wanted.indexOf('巨无霸') >= 0, '「想吃巨无霸」应校验成真实菜名');
+  check(cq3.conflicts.length === 0, '单纯点名菜不是冲突');
+  console.log(`   「${cq.text}」 → 人${cq.resolved.people} 预算${cq.resolved.unlimited ? '不限' : cq.resolved.budgetMin + '-' + cq.resolved.budgetMax} 点名[${cq3.wanted}]`);
+
+  /* ---- 12. 推荐方案新字段：冲突 / 点名菜 / 套餐对比 / 目标兜底 ---- */
+  console.log('12. 推荐方案新字段');
+  const rp = await S.recommendPlans({ text: '3个人，120块以内，想吃巨无霸，想吃得满足一点', people: 2, budgetMax: 200, unlimited: false });
+  check(rp.length === 3, '仍应出三版');
+  check(!!rp[0].conflicts, '方案应带 conflicts（UI 统一出口）');
+  check(rp.every(p => p.wantedInfo.requested.indexOf('巨无霸') >= 0), '三版都应带点名菜报告');
+  check(rp.every(p => p.items.some(i => i.name.indexOf('巨无霸') >= 0)), '巨无霸应进入每一版');
+  check(rp[0].goalInfo.recognized === true, '「想吃得满足一点」应识别为吃饱管饱');
+  check(rp[0].goalInfo.key === 'full', '口语目标应命中 full');
+  check(rp[0].why.indexOf('单点') >= 0 || rp[0].comboSummary.savingCount === 0, '有套餐节省时 why 应提及单点对比');
+  const comboTotals = rp.map(p => p.comboSummary);
+  console.log(`   套餐汇总：${comboTotals.map(c => c.comboCount + '份/省¥' + c.totalSave).join(' | ')}`);
+  const rpCustom = await S.recommendPlans({ text: '2个人，你看着配一下', people: 2, unlimited: true });
+  check(rpCustom[0].goalInfo.recognized === false, '无法识别的目标应如实标记');
+  check(!!rpCustom[0].goalInfo.fallback, '未识别时应给温和兜底文案');
+  check((rpCustom[0].goalInfo.suggestions || []).length >= 3, '兜底应给出可点的目标示例');
+  console.log(`   未识别目标兜底：「${rpCustom[0].goalInfo.fallback}」建议：${(rpCustom[0].goalInfo.suggestions || []).join('/')}`);
+  // 套餐项应带 combo 对比信息
+  const withCombo = rp.find(p => p.items.some(i => i.combo));
+  if (withCombo) {
+    const ci = withCombo.items.find(i => i.combo);
+    check(ci.combo.partsTotal > 0 && typeof ci.combo.save === 'number', '套餐项应带 partsTotal/save');
+    check(ci.combo.partsKnown <= ci.combo.partsCount, '已知子项数不应超过总数');
+    console.log(`   套餐对比示例：${ci.name} 套餐¥${ci.combo.comboPrice} vs 单点合计¥${ci.combo.partsTotal}（${ci.combo.partsKnown}/${ci.combo.partsCount} 子项有价，省¥${ci.combo.save}）`);
+  }
+
+  /* ---- 13. assignOrders：多人拆单分人用券（问题一） ---- */
+  console.log('13. assignOrders 拆单用券');
+  const ap = await S.recommendPlans('4个人，160块以内');
+  const ao = await S.assignOrders(ap[0].planId, { members: ['阿甲', '小乙', '丙丙', '老丁'], useCoupons: true });
+  check(ao.members.length === 4, '应拆出 4 单');
+  check(ao.balanced === true, '各单之和必须等于总额');
+  const sumSub = ao.members.reduce((s, m) => s + m.subtotal, 0);
+  check(Math.abs(sumSub - ap[0].totalPrice) < 0.02, `各单小计之和应等于总额（${sumSub} vs ${ap[0].totalPrice}）`);
+  check(ao.simulated === true, '离线必须标 simulated');
+  check(ao.notes.some(n => n.indexOf('available-coupons') >= 0), '必须说明券收益为何只是估算');
+  check(ao.notes.some(n => n.indexOf('最多用 1 张') >= 0), '必须说明一单一券假设');
+  check(ao.combined.total === ap[0].totalPrice, '合单参照额应等于方案总额');
+  check(['split', 'combined', 'tie'].indexOf(ao.comparison.cheaper) >= 0, '必须给出拆/合哪个划算');
+  ao.members.forEach(m => {
+    check(m.payAfterCoupon <= m.subtotal + 1e-9, '用券后不应更贵');
+    if (m.coupon) check(m.coupon.estimatedCut > 0, '分到券就应有正收益');
+  });
+  console.log(`   拆单 ¥${ao.totals.splitSubtotal}｜券收益估算 ¥${ao.totals.estimatedCouponCut}｜合单参照 ¥${ao.combined.total}（券估算 ¥${ao.combined.estimatedCouponCut}）`);
+  console.log(`   结论：${ao.comparison.verdict}`);
+  ao.members.forEach(m => console.log(`   · ${m.name}: ¥${m.subtotal}${m.coupon ? ' → 用「' + m.coupon.title + '」估省¥' + m.coupon.estimatedCut : ''} → 估付¥${m.payAfterCoupon}`));
+  // 关掉券：不应有任何券被分到
+  const aoNoCoupon = await S.assignOrders(ap[0].planId, { members: ['甲', '乙'], useCoupons: false });
+  check(aoNoCoupon.totals.estimatedCouponCut === 0, '关掉券后收益必须为 0');
+  check(aoNoCoupon.members.every(m => !m.coupon), '关掉券后不应分到券');
+  // 归属：把第一道菜全划给甲
+  const owners = ap[0].items.map((i, idx) => idx === 0 ? [0] : null);
+  const aoOwn = await S.assignOrders(ap[0].planId, { members: ['甲', '乙'], owners: owners, useCoupons: false });
+  check(aoOwn.members[0].subtotal > aoOwn.members[1].subtotal, '划给甲的菜应让甲的小计更高');
+  console.log(`   归属测试：甲 ¥${aoOwn.members[0].subtotal} / 乙 ¥${aoOwn.members[1].subtotal}`);
+  try { await S.assignOrders('plan-x-999', {}); check(false, '未知 planId 应报错'); }
+  catch (e) { check(e.code === 'NO_PLAN', 'assignOrders 未知 planId 错误码'); }
+
   console.log('='.repeat(78));
   console.log(fail === 0 ? `全部通过 ✓（${pass} 项断言）` : `失败 ${fail} 项 / 通过 ${pass} 项`);
   process.exit(fail === 0 ? 0 : 1);

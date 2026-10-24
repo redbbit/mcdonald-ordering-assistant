@@ -208,16 +208,31 @@
       var itemCode = item.productCode || item.code || item.product_code || '';
       var availability = state.availability[itemCode] || item.availability;
       var stock = (plan.simulated === true || state.mode !== 'online' || availability === 'unknown') ? '<small class="stock-unknown">库存以门店为准</small>' : ((availability === 'soldout') ? '<small class="stock-soldout">在线探测：售罄</small>' : ((availability === 'available' || availability === 'ok') ? '<small class="stock-available">在线探测：可售</small>' : '<small class="stock-unknown">库存未校验</small>'));
+      // 套餐 vs 散件对比（问题四）：按官方子项单点价重算，省了多少直接写在菜品上。
+      // 子项只对上一部分价时，partsTotal 是下限 → save 也是下限，文案必须带「起」，不装全知
+      var comboBadge = '';
+      var combo = item.combo;
+      if (combo && combo.save > 0) {
+        comboBadge = '<small class="combo-save" title="套餐 ' + money(combo.comboPrice) + ' vs 子项单点合计 ' + money(combo.partsTotal) + '（' + combo.partsKnown + '/' + combo.partsCount + ' 个子项有官方价' + (combo.complete ? '' : '，为下限') + '）">套餐比单点省 ' + money(combo.save) + (combo.complete ? '' : ' 起') + '</small>';
+      } else if (combo && combo.complete === false) {
+        comboBadge = '<small class="combo-partial" title="部分子项官方未提供价格，未估算">套餐子项部分无官方价</small>';
+      }
       return '<div class="plan-item" title="' + attr(item.name) + ' · ' + roleLabel(item) + '">' + imageMarkup(imgObj, '', item.name + '，官方商品图') +
-        '<span>' + esc(item.name) + '<b>×' + esc(item.quantity) + '</b>' + stock + '</span></div>';
+        '<span>' + esc(item.name) + '<b>×' + esc(item.quantity) + '</b>' + stock + comboBadge + '</span></div>';
     }).join('');
     var isSimulated = plan.simulated === true || plan.mode === 'offline' || state.mode !== 'online';
     var priceNote = isSimulated ? '<span class="source-pill simulated-pill">离线预演</span>' : '<span class="source-pill live-pill">MCP 在线</span>';
+    var comboTag = '';
+    var cs = plan.comboSummary;
+    if (cs && cs.savingCount > 0) {
+      var anyPartial = items.some(function (i) { return i.combo && i.combo.complete === false; });
+      comboTag = buildTag('含 ' + cs.comboCount + ' 份套餐 · 比拆开单点' + (anyPartial ? '至少省 ' : '共省 ') + money(cs.totalSave), 'combo');
+    }
     return '<article class="plan-card" data-plan-id="' + attr(plan.planId) + '">' +
       '<div class="plan-main"><div class="plan-cover"><span class="plan-tier">' + esc(tierNames[plan.tier] || '个性搭配') + '</span>' + imageMarkup(items[0] || {}, '', (items[0] && items[0].name || plan.title) + '，麦当劳官方商品图') + '</div>' +
       '<div class="plan-copy"><div class="plan-title-row"><h3>' + esc(plan.title) + '</h3></div><p class="plan-subtitle">' + esc(plan.subtitle || (plan.people + ' 人 · ' + plan.itemCount + ' 款')) + '</p>' +
       '<p class="plan-why">' + esc(plan.why || '') + '</p><div class="price-line"><strong class="plan-price">' + money(plan.totalPrice) + '</strong><span class="plan-original">' + money(plan.originalPrice) + '</span><span class="save-pill">省 ' + money(plan.discount) + '</span><span class="per-person">人均 ' + money(plan.perPersonPrice) + ' · ' + esc(plan.people) + ' 人</span>' + priceNote + '</div>' +
-      '<div class="plan-labels">' + tags.join('') + '</div></div></div>' +
+      '<div class="plan-labels">' + tags.join('') + comboTag + '</div></div></div>' +
       '<div class="plan-items" aria-label="方案菜品">' + itemHtml + '</div>' +
       '<div class="plan-actions"><button type="button" class="detail-button" data-detail="calories" aria-expanded="false">看这顿热量</button><button type="button" class="detail-button" data-detail="nutrition" aria-expanded="false">看营养成分</button><button type="button" class="select-plan" aria-pressed="false">选这份</button></div>' +
       '<section class="detail-panel" data-panel="calories" hidden></section><section class="detail-panel" data-panel="nutrition" hidden></section></article>';
@@ -261,21 +276,38 @@
     els.selectionBar.hidden = !count;
     els.selectedCount.textContent = '已选 ' + count + ' 份方案';
   }
-  function showGoalNotices(plans) {
-    var seen = {};
+  var WANTED_REASON = {
+    'not-found': '菜单里没找到这道菜（可能是活动名称或已下架），没有加入方案',
+    'avoid': '与忌口冲突，已不加入方案',
+    'budget': '当前预算装不下，没有加入方案'
+  };
+  function showNotices(plans) {
+    var first = plans && plans[0] || {};
     var notices = [];
+    // ① 输入冲突：文本与控件不一致 / 忌口挡住点名菜——如实说谁生效了
+    (first.conflicts || []).forEach(function (c) {
+      notices.push('<div class="notice notice-warn">⚠ ' + esc(c.note) + '</div>');
+    });
+    // ② 点名菜没能落实的：不静默丢弃
+    (first.wantedReport || []).forEach(function (w) {
+      if (!w.reason) return;
+      var extra = w.reason === 'avoid' && w.avoid && w.avoid.length ? '（含 ' + esc(w.avoid.join('、')) + '）' : '';
+      notices.push('<div class="notice notice-warn">🍔 想吃「' + esc(w.name) + '」：' + esc(WANTED_REASON[w.reason] || w.reason) + extra + '</div>');
+    });
+    // ③ 目标没匹配上：温和兜底 + 可点的目标示例（不再是吓人的「没能匹配」）
+    var seen = {};
     plans.forEach(function (plan) {
       var info = plan.goalInfo || {};
-      if (info.recognized === false) {
-        var key = (info.userText || '') + '|' + (info.kcal || '');
-        if (!seen[key]) {
-          seen[key] = true;
-          var text = info.userText || '这个目标';
-          notices.push('⚠️ 你说的「' + text + '」我没能匹配到内置目标，这一版按均衡（' + (info.kcal || plan.targetCaloriesPerPerson || 670) + ' kcal/人）配的。可以试试“减肥”“高蛋白”“尝新品”等目标。');
-        }
-      }
+      if (info.recognized !== false) return;
+      var key = (info.userText || '') + '|' + (info.kcal || '');
+      if (seen[key]) return;
+      seen[key] = true;
+      var suggestions = (info.suggestions || []).map(function (label) {
+        return '<button type="button" class="notice-suggestion" data-goal-suggest="' + attr(label) + '">' + esc(label) + '</button>';
+      }).join('');
+      notices.push('<div class="notice notice-info">🎯 你说的「' + esc(info.userText || '这个需求') + '」我先按「均衡就好」理解（' + (info.kcal || 670) + ' kcal/人）。想更准，可以点：' + suggestions + '</div>');
     });
-    var markup = notices.map(function (text) { return '<div class="notice">' + esc(text) + '</div>'; }).join('');
+    var markup = notices.join('');
     if (state.mode !== 'online' || state.degraded) markup = '<div class="notice offline-notice"><strong>离线预演</strong> 本地快照可用于演示；价格、优惠和库存未实时校验。库存以门店实际为准。' + (state.degradeReason ? ' ' + esc(state.degradeReason) : '') + '</div>' + markup;
     els.notices.innerHTML = markup;
   }
@@ -285,33 +317,61 @@
     els.planGrid.innerHTML = plans.map(renderPlan).join('');
     els.results.hidden = false;
     $('resultCount').textContent = plans.length + ' 份个性化方案';
-    showGoalNotices(plans);
+    applyResolved(plans);
+    showNotices(plans);
     updateSelectionBar();
   }
 
   function currentAvoid() {
     return Array.prototype.slice.call(els.avoid.querySelectorAll('input:checked')).map(function (input) { return input.value; });
   }
+  /* 采集控件原值交给服务层 parseQuery 统一裁决（文本 > 控件 > 默认）。
+   * 冲突检测、实际生效值（resolved）都在 service.js 里做，UI 只负责展示与回填。 */
   function mergeQuery() {
     var text = els.request.value.trim();
-    var parsed = S.parseQuerySync(text);
-    var peopleTouched = els.people.dataset.touched === 'true';
-    var budgetTouched = els.budgetMin.dataset.touched === 'true' || els.budgetMax.dataset.touched === 'true' || els.unlimited.dataset.touched === 'true';
-    var people = peopleTouched ? Math.max(1, Math.min(12, Number(els.people.value) || 1)) : (parsed.matched.people ? parsed.people : (Number(els.people.value) || 2));
-    var budgetMin = parsed.budgetMin || 0;
-    var budgetMax = parsed.budgetMax;
-    var unlimited = parsed.unlimited;
-    if (budgetTouched) {
-      budgetMin = Number(els.budgetMin.value) || 0;
-      budgetMax = els.budgetMax.value === '' ? null : Number(els.budgetMax.value);
-      unlimited = els.unlimited.checked || budgetMax == null;
-    }
-    var goal = els.goal.value.trim() || parsed.goal || '均衡就好';
-    var avoid = unique((parsed.avoid || []).concat(currentAvoid()));
+    var budgetMax = els.budgetMax.value === '' ? null : Number(els.budgetMax.value);
+    var goal = els.goal.value.trim();
+    if (!goal && !text) goal = '均衡就好';
     return {
-      text: text, people: people, budgetMin: budgetMin, budgetMax: unlimited ? null : budgetMax,
-      unlimited: unlimited, goal: goal, avoid: avoid, taste: parsed.taste || []
+      text: text,
+      people: Number(els.people.value) || 1,
+      budgetMin: Number(els.budgetMin.value) || 0,
+      budgetMax: budgetMax,
+      unlimited: els.unlimited.checked || budgetMax == null,
+      goal: goal,
+      avoid: currentAvoid(),
+      taste: []
     };
+  }
+  /* 控件双向同步：文本与控件不一致时，服务层按「文本赢」算出 resolved，
+   * 这里把控件改回实际生效值并标记 touched——用户能看见"刚才那句话算出来是 3 人"，
+   * 下次提交也不会再把同一个值当冲突重复报。 */
+  function applyResolved(plans) {
+    var first = plans && plans[0];
+    var r = first && first.resolved;
+    if (!r) return;
+    if (r.people && Number(els.people.value) !== Number(r.people)) {
+      els.people.value = r.people;
+      els.people.dataset.touched = 'true';
+    }
+    if (r.unlimited) {
+      if (!els.unlimited.checked) els.unlimited.checked = true;
+      els.budgetMin.value = '';
+      els.budgetMax.value = '';
+      els.unlimited.dataset.touched = 'true';
+    } else if (r.budgetMax != null) {
+      if (els.unlimited.checked) els.unlimited.checked = false;
+      if (String(els.budgetMin.value) !== String(r.budgetMin || 0)) els.budgetMin.value = r.budgetMin || 0;
+      if (String(els.budgetMax.value) !== String(r.budgetMax)) els.budgetMax.value = r.budgetMax;
+      els.budgetMin.dataset.touched = 'true';
+      els.budgetMax.dataset.touched = 'true';
+    }
+    var avoidSet = {};
+    (r.avoid || []).forEach(function (v) { avoidSet[v] = true; });
+    els.avoid.querySelectorAll('input').forEach(function (input) {
+      var should = !!avoidSet[input.value];
+      if (input.checked !== should) input.checked = should;
+    });
   }
   function appendMessage(kind, text) {
     var node = document.createElement('div');
@@ -435,6 +495,8 @@
     $('splitItemsList').hidden = !byItem;
     if (byItem) renderSplitItems();
     $('splitResult').hidden = true;
+    $('assignResult').hidden = true;
+    $('assignResult').innerHTML = '';
   }
   function renderSplitItems() {
     var plan = splitSelectedPlan();
@@ -452,6 +514,8 @@
     $('splitPlan').innerHTML = selected.map(function (plan) { return '<option value="' + attr(plan.planId) + '">' + esc(plan.title || '个性套餐') + ' · ' + money(plan.totalPrice) + '</option>'; }).join('');
     $('splitMembers').value = selected[0].people || $('people').value || 2;
     $('splitStatus').textContent = '离线时是预演分账；在线时按服务返回的金额分摊。';
+    $('assignResult').hidden = true;
+    $('assignResult').innerHTML = '';
     renderSplitMembers();
     $('splitPanel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     $('splitMode').focus();
@@ -490,6 +554,57 @@
       renderSplitResult(bill || {});
     } catch (error) { $('splitStatus').textContent = error && error.message ? error.message : '分账暂时失败，请重试。'; }
     finally { $('runSplit').disabled = false; }
+  }
+
+  /* ---- 多人拆单 · 分人用券（问题一）----
+   * 成员名单复用分账面板里的人名；useCoupons 关掉时只做拆单、不配券。 */
+  async function runAssignOrders() {
+    var plan = splitSelectedPlan();
+    if (!plan) { showToast('请选择需要拆单的方案'); return; }
+    if (!S || typeof S.assignOrders !== 'function') {
+      $('assignResult').hidden = false;
+      $('assignResult').innerHTML = '<div class="notice notice-warn">当前服务版本尚未提供 assignOrders；请同步 WorkBuddy 的最新 service.js。</div>';
+      return;
+    }
+    var members = Array.from(document.querySelectorAll('[data-member-name]')).map(function (input, index) {
+      return { name: input.value.trim() || ('成员' + (index + 1)) };
+    });
+    $('runAssign').disabled = true;
+    $('assignResult').hidden = false;
+    $('assignResult').innerHTML = '<p class="soft-placeholder">正在拆单并估算用券…</p>';
+    try {
+      var ao = await S.assignOrders(plan.planId, { members: members, useCoupons: $('assignUseCoupons').checked });
+      renderAssignResult(ao || {});
+    } catch (error) {
+      $('assignResult').innerHTML = '<div class="notice notice-warn">' + esc(error && error.message ? error.message : '拆单暂时失败，请重试。') + '</div>';
+    } finally { $('runAssign').disabled = false; }
+  }
+  function renderAssignResult(ao) {
+    var t = ao.totals || {};
+    var combined = ao.combined || {};
+    var cmp = ao.comparison || {};
+    var cards = (ao.members || []).map(function (m) {
+      var coupon = m.coupon;
+      var couponHtml = coupon
+        ? '<span class="assign-coupon">用「' + esc(coupon.title) + '」估省 ' + money(coupon.estimatedCut) + '</span>'
+        : '<span class="assign-coupon none">这张单没用券</span>';
+      var realHtml = m.real && typeof m.real.price === 'number'
+        ? '<span class="assign-real">MCP 实算 ' + money(m.real.price) + (m.real.deliveryPrice != null ? '（含配送 ' + money(m.real.deliveryPrice) + '）' : '') + '</span>'
+        : '';
+      return '<div class="assign-card"><strong>' + money(m.subtotal) + '</strong><span>' + esc(m.name) + '</span>' + couponHtml + '<span class="assign-pay">估付 ' + money(m.payAfterCoupon) + '</span>' + realHtml + '</div>';
+    }).join('');
+    var combinedLabel = combined.coupon ? '用「' + esc(combined.coupon.title) + '」估省 ' + money(combined.coupon.estimatedCut) : '无可用券';
+    var notes = (ao.notes || []).map(function (n) { return '<li>' + esc(n) + '</li>'; }).join('');
+    $('assignResult').innerHTML =
+      '<div class="assign-summary">' +
+        '<div class="assign-stat"><b>' + money(t.splitSubtotal) + '</b><span>拆单小计合计</span></div>' +
+        '<div class="assign-stat"><b>' + money(t.estimatedCouponCut) + '</b><span>分人用券估省</span></div>' +
+        '<div class="assign-stat"><b>' + money(t.splitPayEstimate) + '</b><span>拆单估付合计</span></div>' +
+        '<div class="assign-stat"><b>' + money(combined.payEstimate) + '</b><span>合单估付 · ' + combinedLabel + '</span></div>' +
+      '</div>' +
+      '<p class="assign-verdict">' + esc(cmp.verdict || '两条路子估算打平') + '</p>' +
+      '<div class="assign-cards">' + cards + '</div>' +
+      (notes ? '<ul class="assign-notes">' + notes + '</ul>' : '');
   }
 
   function applyCoupon(index) {
@@ -562,6 +677,8 @@
     state.activeCoupon = null;
     $('splitPanel').hidden = true;
     $('splitResult').hidden = true;
+    $('assignResult').hidden = true;
+    $('assignResult').innerHTML = '';
     els.planGrid.innerHTML = '';
     els.notices.innerHTML = '';
     els.selectionBar.hidden = true;
@@ -672,6 +789,16 @@
     $('splitPlan').addEventListener('change', renderSplitItems);
     $('splitMembersList').addEventListener('input', function (event) { if (event.target.matches('[data-member-name]') && $('splitMode').value === 'byItem') renderSplitItems(); });
     $('runSplit').addEventListener('click', runSplit);
+    $('runAssign').addEventListener('click', runAssignOrders);
+    // 目标兜底建议：点一个就填进目标框并按新目标重配
+    els.notices.addEventListener('click', function (event) {
+      var button = event.target.closest('[data-goal-suggest]');
+      if (!button) return;
+      els.goal.value = button.dataset.goalSuggest || '';
+      els.goal.dataset.touched = 'true';
+      showToast('已把目标换成「' + (button.dataset.goalSuggest || '') + '」，正在重新搭配');
+      runRecommendation(mergeQuery(), { scroll: false });
+    });
     $('projectorToggle').addEventListener('click', function () {
       var enabled = document.body.classList.toggle('projector-mode');
       $('projectorToggle').setAttribute('aria-pressed', enabled ? 'true' : 'false');

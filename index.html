@@ -96,6 +96,12 @@
             <div class="split-items" id="splitItemsList" hidden></div>
             <div class="split-foot"><span id="splitStatus">选择一个方案后即可计算分账。</span><button type="button" class="primary-small" id="runSplit">计算分账</button></div>
             <div class="split-result" id="splitResult" hidden aria-live="polite"></div>
+            <div class="assign-block">
+              <div class="assign-head"><div><span class="section-kicker">SPLIT ORDERS · COUPONS</span><h4 id="assignTitle">多人拆单 · 分人用券</h4></div></div>
+              <p class="assign-intro">把选中的方案拆成每人一张小单、各自用券，并与「合单用一张券」对比。官方 available-coupons 不返回券 code，券收益按券面规则估算，恒为预演值；每单最多用 1 张券（官方未提供叠加规则）。</p>
+              <div class="assign-controls"><label class="assign-toggle"><input type="checkbox" id="assignUseCoupons" checked><span>尝试分人用优惠券</span></label><button type="button" class="primary-small" id="runAssign">拆单并用券</button></div>
+              <div class="assign-result" id="assignResult" hidden aria-live="polite"></div>
+            </div>
           </section>
           <div class="summary-output" id="summaryOutput" hidden>
             <div class="summary-head"><strong>带去小程序的点单清单</strong><button type="button" id="copySummary">复制清单</button><button type="button" class="icon-close" id="closeSummary" aria-label="关闭清单">×</button></div>

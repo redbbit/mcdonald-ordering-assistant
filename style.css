@@ -269,6 +269,36 @@ input[type="number"], input[type="text"] { min-height: 44px; }
 .live-pill { color:#176647; background:#dff3e7; }
 .offline-notice { border-color:#e7c578 !important; background:#fff4d6 !important; color:#704a10 !important; }
 .offline-notice strong { margin-right:5px; }
+/* 冲突提示（问题五）：与普通提示同色系，但带 ⚠ 语义更强的边线 */
+.notice-warn { border-color:#e8b64c !important; background:#fff6e2 !important; color:#6b4d12 !important; }
+.notice-info { border-color:#c9d8c4 !important; background:#f3f8ef !important; color:#3c5634 !important; }
+.notice-suggestion { margin:2px 3px 0 0; padding:2px 8px; border:1px solid #b9cbb2; border-radius:99px; background:#fff; color:#3c5634; font-size:10px; font-weight:700; cursor:pointer; }
+.notice-suggestion:hover { background:#e8f1e2; border-color:#7d9c72; }
+/* 套餐 vs 散件徽标（问题四） */
+.combo-save { display:block; margin-top:4px; font-size:10px; font-weight:800; color:#176647; }
+.combo-partial { display:block; margin-top:4px; font-size:10px; font-weight:700; color:#817b72; }
+.plan-label.combo { color:#176647; background:#dff3e7; }
+/* 多人拆单 · 分人用券（问题一） */
+.assign-block { margin-top:14px; border-top:1px dashed #e3d7c3; padding-top:12px; }
+.assign-head h4 { margin:2px 0 0; font-size:13px; }
+.assign-intro { margin:6px 0 10px; font-size:10px; line-height:1.7; color:var(--muted); }
+.assign-controls { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.assign-toggle { display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:700; color:var(--ink); cursor:pointer; }
+.assign-result { margin-top:10px; }
+.assign-summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:8px; }
+.assign-stat { border:1px solid #e8ddcb; border-radius:9px; background:#fcf8ef; padding:8px 10px; }
+.assign-stat b { display:block; font-size:15px; }
+.assign-stat span { font-size:10px; color:var(--muted); }
+.assign-verdict { margin:10px 0 0; padding:8px 10px; border:1px solid #c9d8c4; border-radius:8px; background:#f3f8ef; color:#3c5634; font-size:11px; font-weight:800; }
+.assign-cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:8px; margin-top:10px; }
+.assign-card { border:1px solid #e8ddcb; border-radius:9px; background:#fffdf8; padding:9px 10px; display:grid; gap:3px; }
+.assign-card strong { font-size:15px; }
+.assign-card > span { font-size:10px; color:var(--muted); }
+.assign-coupon { font-size:10px; font-weight:700; color:#80520e; }
+.assign-coupon.none { color:#a09889; font-weight:600; }
+.assign-pay { font-size:11px !important; font-weight:800; color:var(--ink) !important; }
+.assign-real { font-size:10px; font-weight:700; color:#176647; }
+.assign-notes { margin:10px 0 0; padding-left:16px; font-size:10px; line-height:1.7; color:var(--muted); }
 body.projector-mode { font-size:1.14em; }
 body.projector-mode .topbar { padding-block:20px; }
 body.projector-mode .top-meta, body.projector-mode .trust-footer, body.projector-mode .hero-source, body.projector-mode .plan-subtitle, body.projector-mode .plan-why { font-size:1.06em; }

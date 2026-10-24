@@ -68,8 +68,18 @@
   var NEG_RE = /(不|别|忌|戒|不要|不吃|拒绝|讨厌|过敏|不能吃|吃不了|排斥)/;
 
   /* ---------------- 自然语言 → AdvisorQuery ----------------
-   * 解析失败不抛错：给默认值 + matchedReason，UI 照常能跑，不会卡住。   */
-  function parseQuery(input) {
+   * 解析失败不抛错：给默认值 + matchedReason，UI 照常能跑，不会卡住。
+   *
+   * 冲突检测（问题五的修法）：
+   *   以前是「文本 silently 覆盖控件」——输入框写 3 人、人数控件是 2，界面显示 2
+   *   实际按 3 算，用户完全看不出发生了什么事。现在：
+   *     ① 每个字段记录 source：'text' | 'control' | 'default'
+   *     ② 文本与控件不一致时进 conflicts[]，UI 弹提示
+   *     ③ resolved 给出「实际生效值」，UI 据此把控件同步过来（双向同步）
+   *   优先级固定为：文本 > 控件 > 默认（文本是这一次查询里最新的意图表述）。
+   *   忌口冲突（文本想吃 X，但 X 在忌口清单里）另行检测：忌口赢，安全优先，
+   *   并把被挡掉的菜名如实告诉用户——不静默丢弃。                       */
+  function parseQuery(input, dishes) {
     var raw = (typeof input === 'string') ? input : (input || {}).text || '';
     var t = raw.replace(/\s+/g, ' ');
     var q = {
@@ -81,10 +91,24 @@
       goal: '',
       avoid: [],
       taste: [],
+      wanted: [],           // 用户点名要的菜（「」「想吃X」），已校验成真实菜名
       slot: null,
-      matched: { people: false, budget: false, goal: false, avoid: [] }
+      matched: { people: false, budget: false, goal: false, avoid: [] },
+      conflicts: [],
+      sources: { people: 'default', budget: 'default', avoid: 'default' },
+      resolved: null        // 实际生效值快照，UI 双向同步用
     };
+    // 控件原值（冲突检测的对照组）；只在传入对象时存在
+    var ctrl = null;
     if (input && typeof input === 'object') {
+      ctrl = {
+        people: input.people != null ? +input.people : null,
+        budgetMin: input.budgetMin != null ? +input.budgetMin : null,
+        budgetMax: input.budgetMax != null ? +input.budgetMax : null,
+        unlimited: input.unlimited != null ? !!input.unlimited : null,
+        goal: input.goal || null,
+        avoid: input.avoid ? input.avoid.slice() : null
+      };
       if (input.people) q.people = input.people;
       if (input.budgetMin != null) q.budgetMin = input.budgetMin;
       if (input.budgetMax != null) q.budgetMax = input.budgetMax;
@@ -100,26 +124,28 @@
     if (m) {
       q.people = CN[m[1]] || parseInt(m[1], 10);
       q.matched.people = true;
-    } else if (/(双人|两个人)/.test(t)) { q.people = 2; q.matched.people = true; }
-    else if (/单人|一个人|自己吃/.test(t)) { q.people = 1; q.matched.people = true; }
+      q.sources.people = 'text';
+    } else if (/(双人|两个人)/.test(t)) { q.people = 2; q.matched.people = true; q.sources.people = 'text'; }
+    else if (/单人|一个人|自己吃/.test(t)) { q.people = 1; q.matched.people = true; q.sources.people = 'text'; }
     q.people = Math.max(1, Math.min(12, q.people || 1));
+    if (q.sources.people === 'default' && ctrl && ctrl.people) q.sources.people = 'control';
 
     /* 预算：无限 / 区间 / 上限 / 下限 */
     if (/(无限预算|不限预算|不封顶|随便花|不差钱|多少钱都行|不确定预算)/.test(t)) {
-      q.unlimited = true; q.budgetMax = null; q.matched.budget = true;
+      q.unlimited = true; q.budgetMax = null; q.matched.budget = true; q.sources.budget = 'text';
     } else {
       var b;
       b = /([0-9]{1,4})\s*[-~—－至到]\s*([0-9]{1,4})\s*(块|元|块钱|rmb|RMB)?/.exec(t);
       if (b) {
         q.budgetMin = Math.min(+b[1], +b[2]); q.budgetMax = Math.max(+b[1], +b[2]);
-        q.unlimited = false; q.matched.budget = true;
+        q.unlimited = false; q.matched.budget = true; q.sources.budget = 'text';
       }
       if (!q.matched.budget) {
         b = /(预算|花|控制在|控制在|便宜点)?\s*([0-9]{1,4})\s*(块|元|块钱|rmb|RMB)?\s*(以内|以下|之内|封顶|左右|出头|搞定)/.exec(t);
-        if (b) { q.budgetMin = 0; q.budgetMax = +b[2]; q.unlimited = false; q.matched.budget = true; }
+        if (b) { q.budgetMin = 0; q.budgetMax = +b[2]; q.unlimited = false; q.matched.budget = true; q.sources.budget = 'text'; }
       }
-      if (!q.matched.budget && input && typeof input === 'object' && input.budgetMax != null) {
-        q.unlimited = false;
+      if (!q.matched.budget && ctrl && (ctrl.budgetMax != null || ctrl.unlimited === false)) {
+        q.sources.budget = 'control';
       }
     }
     if (q.budgetMax != null) { q.budgetMax = Math.max(q.budgetMin, q.budgetMax); q.unlimited = false; }
@@ -138,7 +164,95 @@
       }
       if (hit && q.avoid.indexOf(v) < 0) { q.avoid.push(v); q.matched.avoid.push(v); }
     });
+    if (q.avoid.length && !(ctrl && ctrl.avoid && ctrl.avoid.length)) q.sources.avoid = 'text';
+    else if (q.avoid.length) q.sources.avoid = 'merged';
 
+    /* 点名菜：「巨无霸」/「想吃麦辣鸡腿堡」→ 校验成数据里的真实菜名。
+     * 认不出来（比如活动标题）就静默忽略——不拿它当忌口、不当目标、不乱报冲突。
+     * 匹配规则与引擎一致：相等 / 互相包含 / 共同前缀 ≥3 字
+     * （券面和口语常说「麦辣鸡腿堡」，菜单里叫「麦辣鸡腿汉堡」，差一个字）。 */
+    if (dishes && dishes.length) {
+      var wantedNames = [];
+      var qre = /[「『“"]([^」』”"]{2,15})[」』”"]/g, qm;
+      while ((qm = qre.exec(t))) wantedNames.push(qm[1]);
+      var vre = /(?:想吃|想要|来[一份两个三个]?|加[一个份]?|点[一个份]?|我要|整[一个份]?)\s*([\u4e00-\u9fa5A-Za-z0-9]{2,12})/g, vm;
+      while ((vm = vre.exec(t))) wantedNames.push(vm[1]);
+      function nameScore(query, name) {
+        if (!query || !name) return 0;
+        if (query === name) return 1000 + name.length;
+        if (name.indexOf(query) >= 0) return 500 + name.length;
+        if (query.indexOf(name) >= 0) return 400 + name.length;
+        var n = Math.min(query.length, name.length), i = 0;
+        while (i < n && query.charAt(i) === name.charAt(i)) i++;
+        return i >= 3 ? 100 + i : 0;
+      }
+      var TIER_RE = /(三件套|四件套|五件套|双件套|件套|套餐|桶|分享餐|双人|多人|随心选|组合|任选)/;
+      wantedNames.forEach(function (name) {
+        var hit = null, hitScore = 0;
+        dishes.forEach(function (d) {
+          if (!d || d.name.length < 2) return;
+          var s = nameScore(name, d.name);
+          if (s <= 0) return;
+          // 规格层级不一致：说法没带「套/桶/分享」而菜名带了 → 不是同一个东西
+          if (TIER_RE.test(d.name) && !TIER_RE.test(name)) s = Math.min(s, 99);
+          if (s > hitScore || (s === hitScore && hit && d.name.length < hit.name.length)) {
+            hit = d; hitScore = s;
+          }
+        });
+        if (hit && q.wanted.indexOf(hit.name) < 0) q.wanted.push(hit.name);
+      });
+    }
+
+    /* ---- 冲突检测：文本 vs 控件 ---- */
+    if (ctrl) {
+      if (q.sources.people === 'text' && ctrl.people && ctrl.people !== q.people) {
+        q.conflicts.push({
+          field: 'people', text: q.people, control: ctrl.people, resolved: q.people,
+          note: '输入框写的是 ' + q.people + ' 人，人数控件选的是 ' + ctrl.people + ' 人，已按输入框的 ' + q.people + ' 人计算'
+        });
+      }
+      var ctrlBudgetKnown = ctrl.budgetMax != null || ctrl.unlimited === true;
+      if (q.matched.budget && ctrlBudgetKnown) {
+        var sameBudget = (q.unlimited && ctrl.unlimited === true) ? true :
+          (!q.unlimited && ctrl.unlimited !== true && ctrl.budgetMax != null &&
+           ctrl.budgetMax === q.budgetMax && (ctrl.budgetMin || 0) === q.budgetMin);
+        if (!sameBudget) {
+          var ctrlDesc = ctrl.unlimited === true ? '不限预算' :
+            ('¥' + (ctrl.budgetMin || 0) + (ctrl.budgetMax != null ? '–' + ctrl.budgetMax : ' 以内'));
+          var textDesc = q.unlimited ? '不限预算' : ('¥' + q.budgetMin + (q.budgetMax != null ? '–' + q.budgetMax : ' 以内'));
+          q.conflicts.push({
+            field: 'budget', text: textDesc, control: ctrlDesc,
+            resolved: q.unlimited ? null : { min: q.budgetMin, max: q.budgetMax },
+            note: '输入框写的是「' + textDesc + '」，预算控件是「' + ctrlDesc + '」，已按输入框计算'
+          });
+        }
+      }
+      // 忌口 vs 点名菜：忌口赢，但必须告诉用户谁被挡了
+      if (q.avoid.length && q.wanted.length && dishes && dishes.length) {
+        q.wanted.slice().forEach(function (name) {
+          var d = null;
+          dishes.forEach(function (x) { if (x.name === name) d = x; });
+          if (!d) return;
+          var blocked = q.avoid.filter(function (v) { return (d.Avoid || []).indexOf(v) >= 0; });
+          if (blocked.length) {
+            q.conflicts.push({
+              field: 'avoid', text: name, control: blocked.join('、'), resolved: 'dropped',
+              note: '你说想吃「' + name + '」，但它含 ' + blocked.join('、') + '，与忌口冲突，已不加入方案'
+            });
+            q.wanted.splice(q.wanted.indexOf(name), 1);
+          }
+        });
+      }
+    }
+
+    q.resolved = {
+      people: q.people,
+      budgetMin: q.budgetMin,
+      budgetMax: q.unlimited ? null : q.budgetMax,
+      unlimited: q.unlimited,
+      avoid: q.avoid.slice(),
+      wanted: q.wanted.slice()
+    };
     return q;
   }
 
@@ -276,7 +390,9 @@
         dealType: d.dealType || '',
         parts: (d.parts || []).map(function (x) { return { code: x.code, name: x.name, qty: x.qty }; }),
         availability: d.ok === true ? 'ok' : 'soldout',
-        nutrition: nutritionOfDish(d)
+        nutrition: nutritionOfDish(d),
+        // 套餐 vs 散件：按官方子项单点价重算的对比（问题四）。非套餐或子项无价为 null
+        combo: E.comboBreakdown ? E.comboBreakdown(d, byCode) : null
       };
     }
 
@@ -426,29 +542,38 @@
 
     /* ---------------- recommendPlans：固定三版 ---------------- */
     function recommendPlans(query) {
-      // 无论传字符串还是结构化对象，都统一过一遍解析器，保证字段齐全
-      var q = parseQuery(query);
+      // 无论传字符串还是结构化对象，都统一过一遍解析器，保证字段齐全。
+      // 传入 DISHES：点名菜校验与忌口冲突检测都需要真实菜单。
+      var q = parseQuery(query, DISHES);
       if (!q.people) q.people = 1;
 
       var res = E.makePlans({
         dishes: DISHES, people: q.people, avoid: q.avoid,
         bmin: q.budgetMin || 0, bmax: q.budgetMax == null ? 0 : q.budgetMax,
         unlimited: q.unlimited || q.budgetMax == null,
-        goal: q.goal
+        goal: q.goal,
+        wanted: q.wanted || []
       });
 
       if (res.error) {
         return Promise.reject(Object.assign(
-          new Error(res.error), { code: 'NO_PLAN', advice: res.advice || [] }));
+          new Error(res.error), { code: 'NO_PLAN', advice: res.advice || [], conflicts: q.conflicts || [] }));
       }
 
       var out = res.plans.map(function (raw) {
-        return toPlan(raw, q, res.goal);
+        return toPlan(raw, q, res.goal, res.wanted || []);
       });
+      // 冲突、点名菜落空、实际生效值挂在第一份方案上，UI 统一读（数组接口不变）
+      if (out.length) {
+        out[0].conflicts = q.conflicts || [];
+        out[0].resolved = q.resolved;
+        out[0].sources = q.sources;
+        out[0].wantedReport = res.wanted || [];
+      }
       return p(out);
     }
 
-    function toPlan(raw, q, goal) {
+    function toPlan(raw, q, goal, wantedReport) {
       var items = raw.items.map(itemOf);
       var N = raw.people || 1;
       var plannerGoal = raw.goal || goal;          // 该档自己的目标参数
@@ -459,6 +584,14 @@
       var knownN = items.filter(function (i) { return i.nutrition; }).length;
       var unknownNames = items.filter(function (i) { return !i.nutrition; }).map(function (i) { return i.name; });
 
+      // 套餐 vs 散件汇总（问题四）：这一版里几份套餐、比拆开单点共省多少
+      var comboItems = items.filter(function (i) { return i.combo && i.combo.save > 0; });
+      var comboSummary = {
+        comboCount: items.filter(function (i) { return i.combo; }).length,
+        savingCount: comboItems.length,
+        totalSave: round(comboItems.reduce(function (s, i) { return s + i.combo.save * i.quantity; }, 0))
+      };
+
       seq += 1;
       var planId = 'plan-' + raw.tier + '-' + seq;
 
@@ -467,7 +600,7 @@
         tier: raw.tier,                                    // 'budget' | 'lean' | 'new'
         title: raw.name,
         subtitle: raw.sub,
-        why: buildWhy(raw, N, q, targetPer, unknownNames),
+        why: buildWhy(raw, N, q, targetPer, unknownNames, comboSummary),
 
         /* 双模式标记：离线时价格来自快照，UI 必须显示黄色「预演校验」而非绿色对勾 */
         mode: MODE,
@@ -497,7 +630,7 @@
           // recognized 一律按「用户自己填的那句话」判定，不按某档的内部参数——
           // 否则低卡档永远显示 key='lose'，UI 会误报"目标已识别"
           var ug = (typeof E.normGoal === 'function' && q.goal) ? E.normGoal(q.goal) : { custom: true };
-          return {
+          var info = {
             key: plannerGoal.key || 'custom',
             label: plannerGoal.name || '',
             kcal: targetPer,
@@ -506,6 +639,15 @@
             custom: !!ug.custom,
             recognized: !ug.custom
           };
+          if (ug.custom) {
+            // 兜底话术升级（问题三）：不再用「没能匹配到内置目标」这种吓人说法，
+            // 改成「先按均衡理解」+ 给出可点的目标示例，语气是接住了、不是拒收了。
+            info.fallback = '先按「均衡就好」理解（' + targetPer + ' kcal/人）';
+            info.suggestions = ['减肥控卡', '增肌高蛋白', '吃饱管饱', '尝鲜新品'];
+          } else {
+            info.hits = ug.hits || [];       // 命中了哪些词，解释「为什么这么理解」
+          }
+          return info;
         })(),
         // over=null 表示因缺官方数据无法判定，不能硬说没超
         overCalories: hasAnyKcal ? Math.max(0, round(nut.total.kcal - targetAll, 0)) : null,
@@ -538,6 +680,17 @@
         promoTags: collect(items, 'promoTags'),
         couponHints: [],
 
+        // 套餐 vs 散件对比（问题四）
+        comboSummary: comboSummary,
+        // 点名菜落实报告（问题五配套）：点了什么、哪几版塞进去了、谁被挡住了
+        wantedInfo: {
+          requested: (wantedReport || []).map(function (w) { return w.name; }),
+          unmet: (raw.unmetWanted || []).map(function (u) {
+            return { name: u.name, reason: u.reason, avoid: u.avoid || [] };
+          })
+        },
+        conflicts: q.conflicts || [],
+
         availability: 'ok',
         // 构建期已用 calculate-price 逐款校验，售罄的进不了候选池，故运行时恒为空
         unavailableReplacements: [],
@@ -560,13 +713,14 @@
       return Object.keys(s);
     }
 
-    function buildWhy(raw, N, q, targetPer, unknownNames) {
+    function buildWhy(raw, N, q, targetPer, unknownNames, comboSummary) {
       var bits = [];
       bits.push(N + ' 人');
       if (q.unlimited || q.budgetMax == null) bits.push('预算不限');
       else if (q.budgetMin) bits.push('预算 ' + yuan(q.budgetMin) + '–' + yuan(q.budgetMax));
       else bits.push('预算 ' + yuan(q.budgetMax) + ' 以内');
       if (q.avoid.length) bits.push('忌 ' + q.avoid.join('、'));
+      if (q.wanted && q.wanted.length) bits.push('想吃 ' + q.wanted.join('、'));
 
       var head = bits.join(' · ');
       var body;
@@ -579,6 +733,11 @@
       } else {
         body = '优先挑官方打了「上新 / 限定 / 促销」标签的，合计 ' + yuan(raw.total) +
           '，比原价省 ' + yuan(raw.save) + '。';
+      }
+      // 套餐 vs 散件：把「比拆开单点省多少」写进推荐语（问题四）
+      if (comboSummary && comboSummary.savingCount > 0) {
+        body += ' 其中 ' + comboSummary.savingCount + ' 份套餐按官方子项单点价重算，比拆开单点共省 ' +
+          yuan(comboSummary.totalSave) + '。';
       }
       if (unknownNames.length) {
         body += ' 其中 ' + unknownNames.length + ' 款麦当劳官方未公布营养数据，热量与营养为已知部分的下限。';
@@ -687,6 +846,150 @@
       }));
     }
 
+    /* ---------------- assignOrders：多人拆单 · 分人用券（问题一）
+     * 把总需求清单拆成每个人各自的小单，再给每张小单配一张券，
+     * 最后把「合单」和「拆单」两条路子的钱算清楚给用户看。
+     *
+     * 诚实的边界（全部写进返回的 notes，UI 原样展示）：
+     *   · 官方 available-coupons 只回券标题/图片/状态，**不回券 code**，
+     *     所以券收益在离线与在线都只能是「券面规则估算」，恒带 simulated:true；
+     *   · 每张小单最多用 1 张券（官方未提供叠加规则，不假设能叠）；
+     *   · 配送费只有在线模式拿得到真实值（官方 calculate-price 返回），
+     *     离线不编，也不计入对比。                                    */
+    function assignOrders(planId, opt) {
+      opt = opt || {};
+      var plan = plans[planId];
+      if (!plan) {
+        return Promise.reject(Object.assign(
+          new Error('planId 不存在或已过期'), { code: 'NO_PLAN' }));
+      }
+
+      var members = (opt.members && opt.members.length)
+        ? opt.members.map(function (m) { return typeof m === 'string' ? { name: m } : Object.assign({}, m); })
+        : Array.from({ length: plan.people }, function (_, i) { return { name: '第 ' + (i + 1) + ' 人' }; });
+
+      // 归属：opt.owners 与 plan.items 对齐；或 opt.assignment 按 productCode 查
+      var owners = null;
+      if (opt.owners && opt.owners.length) owners = opt.owners;
+      else if (opt.assignment) {
+        owners = plan.items.map(function (i) { return opt.assignment[i.productCode] || null; });
+      }
+
+      var useCoupons = opt.useCoupons !== false;
+      var couponList = (opt.coupons && opt.coupons.length ? opt.coupons : (DATA.coupons || []))
+        .filter(function (c) { return c && c.title && c.title.indexOf('###') !== 0; });
+
+      var built = E.buildSubOrders(plan.items.map(function (i) {
+        return { code: i.productCode, name: i.name, price: i.unitPrice != null ? i.unitPrice : i.price,
+                 qty: i.quantity };
+      }), members, owners);
+
+      var couponResult = { totalCut: 0 };
+      if (useCoupons && couponList.length) {
+        couponResult = E.optimizeCoupons(built.subOrders, couponList, DISHES);
+      }
+
+      // 合单参照：一整单用它能用的最好的那张券（同样只是估算）
+      var combinedCoupon = null, combinedCut = 0;
+      if (useCoupons && couponList.length) {
+        couponList.forEach(function (c) {
+          var rule = E.parseCouponRule(c.title || c.name || '');
+          var dish = E.matchCouponDish(rule, DISHES);
+          var cut = E.estimateCouponCut(rule, dish, plan.totalPrice);
+          if (cut > combinedCut) { combinedCut = cut; combinedCoupon = { title: c.title, estimatedCut: cut }; }
+        });
+      }
+
+      var notes = [
+        '券收益为券面规则估算：官方 available-coupons 不返回券 code，无法代入 calculate-price 真实试算；领取与核销请在麦当劳 APP / 小程序完成',
+        '每张小单最多用 1 张券：官方未提供叠加规则，不假设可以叠'
+      ];
+      if (SIMULATED) {
+        notes.push('离线预演：各单金额为快照价；配送费官方未在快照中提供，未计入对比');
+      }
+
+      function finalize(realResults) {
+        var subOrders = built.subOrders.map(function (s, i) {
+          var real = realResults ? realResults[i] : null;
+          return {
+            index: s.index,
+            name: s.name,
+            items: s.items,
+            subtotal: s.subtotal,
+            coupon: s.coupon,
+            payAfterCoupon: s.payAfterCoupon,
+            real: real ? {
+              price: real.price, originalPrice: real.originalPrice,
+              deliveryPrice: real.deliveryPrice != null ? real.deliveryPrice : null,
+              packingPrice: real.packingPrice != null ? real.packingPrice : null,
+              tablewarePrice: real.tablewarePrice != null ? real.tablewarePrice : null,
+              requestId: real.requestId || null
+            } : null
+          };
+        });
+        var splitRealTotal = null, splitDelivery = null;
+        if (realResults) {
+          splitRealTotal = 0; splitDelivery = 0;
+          realResults.forEach(function (r) {
+            if (r && typeof r.price === 'number') splitRealTotal += r.price;
+            if (r && typeof r.deliveryPrice === 'number') splitDelivery += r.deliveryPrice;
+          });
+          splitRealTotal = round(splitRealTotal);
+          splitDelivery = round(splitDelivery);
+        }
+        var splitSubtotal = built.total;
+        var splitPay = round(splitSubtotal - couponResult.totalCut + (splitDelivery || 0));
+        var combinedPay = round(plan.totalPrice - combinedCut);
+        var diff = round(splitPay - combinedPay);
+        return stamp({
+          planId: planId,
+          splitMode: 'byItem',
+          people: members.length,
+          members: subOrders,
+          couponsUsed: subOrders.filter(function (s) { return s.coupon; })
+            .map(function (s) { return { member: s.name, title: s.coupon.title, estimatedCut: s.coupon.estimatedCut }; }),
+          combined: {
+            total: plan.totalPrice,
+            coupon: combinedCoupon,
+            estimatedCouponCut: combinedCut,
+            payEstimate: combinedPay
+          },
+          totals: {
+            splitSubtotal: splitSubtotal,
+            estimatedCouponCut: couponResult.totalCut,
+            splitDeliveryFees: splitDelivery,
+            splitPayEstimate: splitPay,
+            splitRealTotal: splitRealTotal
+          },
+          comparison: {
+            cheaper: diff < -0.005 ? 'split' : (diff > 0.005 ? 'combined' : 'tie'),
+            diff: diff,
+            verdict: diff < -0.005
+              ? '拆单各用券，估算省 ' + yuan(-diff) + '（配送费' + (splitDelivery ? '已按官方返回计入' : '未计入') + '）'
+              : (diff > 0.005
+                ? '合单更划算：拆单估算多付 ' + yuan(diff) + (splitDelivery ? '（含各单配送费）' : '')
+                : '两条路子估算打平')
+          },
+          notes: notes,
+          balanced: built.balanced
+        });
+      }
+
+      // 在线：每单真调一次官方 calculate-price（只读算价，绝无下单）
+      if (!SIMULATED && ADAPTER && typeof ADAPTER.calculatePrice === 'function') {
+        var jobs = built.subOrders.map(function (s) {
+          return ADAPTER.calculatePrice(s.items.map(function (i) {
+            return { code: i.code, qty: i.qty };
+          }), { storeCode: DATA.store.code })
+            .catch(function (e) {
+              return { ok: false, error: (e && e.code) || 'calc_failed' };
+            });
+        });
+        return Promise.all(jobs).then(finalize);
+      }
+      return p(finalize(null));
+    }
+
     function getNutritionByProductCodes(codes) {
       var out = {};
       (codes || []).forEach(function (c) {
@@ -713,12 +1016,13 @@
       getMeta: getMeta,
       getShowcase: getShowcase,
       getCampaigns: getCampaigns,
-      parseQuery: function (text) { return p(parseQuery(text)); },
+      parseQuery: function (text, dishes) { return p(parseQuery(text, dishes)); },
       parseQuerySync: parseQuery,
       recommendPlans: recommendPlans,
       getPlan: getPlan,
       calculatePlan: calculatePlan,
       splitBill: splitBill,
+      assignOrders: assignOrders,
       buildOrderSummary: buildOrderSummary,
       mode: function () { return MODE; },
       isSimulated: function () { return SIMULATED; },
