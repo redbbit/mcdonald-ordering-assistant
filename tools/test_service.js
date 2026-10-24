@@ -297,6 +297,25 @@ console.log('='.repeat(78));
     check(rpSplit[0].items.every(i => i.name !== splitCombo.name), '父套餐不应再以整份出现');
     check((rpSplit[0].why || '').indexOf('按单点计入') >= 0, '方案文案应说明子项按单点计入');
   } else { check(false, '数据里应至少有一个可拆的套餐（名字以套餐/双人餐等结尾且子项可解析）'); }
+  // 子项偏好：文本解析 → resolved 回填 + 面板回传优先 + 忌口守卫
+  const qPref = S.parseQuerySync('2个人，100块，我想要安格斯厚牛堡，不要薯条和可乐', D.dishes);
+  check(qPref.itemPrefs.some(p => p.pref === 'want' && /安格斯厚牛堡/.test(p.name)), '文本子项偏好：want 应解析出来');
+  check(qPref.itemPrefs.some(p => p.pref === 'avoid' && p.name === '薯条'), '文本子项偏好：avoid 应解析出来');
+  check(qPref.itemPrefs.every(p => p.source === 'text'), '纯文本解析的偏好 source=text');
+  check(qPref.sources.itemPrefs === 'text', 'sources.itemPrefs=text');
+  check(qPref.resolved.itemPrefs.length === qPref.itemPrefs.length, 'resolved.itemPrefs 应回传全部偏好（UI 勾选面板回填）');
+  check(qPref.resolved.itemPrefs.every(p => p.mention), 'resolved 偏好带 mention（回填时显示用户原话）');
+  // 面板与文本冲突：按面板走，但必须留 conflict 记录（不静默覆盖）
+  const fries = D.dishes.filter(d => d.ok === true && d.name === '薯条')[0];
+  const qPanel = S.parseQuerySync({ text: '2个人，100块，不要薯条', itemPrefs: [{ name: '薯条', mention: '薯条', code: fries.code, pref: 'want' }] }, D.dishes);
+  check(qPanel.itemPrefs.length === 1 && qPanel.itemPrefs[0].pref === 'want', '面板回传优先：同名子项以控件为准');
+  check(qPanel.sources.itemPrefs === 'merged', '文本+面板都有时 sources.itemPrefs=merged');
+  check(qPanel.conflicts.some(c => c.field === 'itemPrefs' && c.control), '面板覆盖文本偏好必须留 conflict 记录');
+  // 忌口守卫：「不要辣」是忌口，不进子项偏好（两套逻辑不重复记）
+  const qAvoid = S.parseQuerySync('不要辣，想吃巨无霸', D.dishes);
+  check(qAvoid.avoid.indexOf('辣') >= 0, '「不要辣」应进忌口');
+  check(qAvoid.itemPrefs.every(p => p.name !== '辣'), '忌口别名不得混进子项偏好');
+  console.log(`   子项偏好：文本 ${qPref.itemPrefs.length} 条 → resolved 回填；面板覆盖留 conflict`);
   // 方案层：新模式标记 + 候选池过滤
   const rpSingle = await S.recommendPlans('2个人，80块，哥有钱就喜欢单点');
   check(rpSingle[0].modes && rpSingle[0].modes.singlesOnly === true, '方案应带 singlesOnly 标记');
@@ -307,6 +326,35 @@ console.log('='.repeat(78));
   const rpDining = await S.recommendPlans('2个人，100块，外送');
   check(rpDining[0].dining === 'delivery' && (rpDining[0].diningLabel || '').indexOf('外送') >= 0, '方案应带 dining 与中文标签');
   check(rpDining[0].orderMode === 'split', '方案应带 orderMode（默认各自点）');
+  // 混合方案契约：itemPrefs / sourceType / mixSummary / tradeoffExplanation / comboCompare / weights
+  const rpPref = await S.recommendPlans('2个人，100块，我想要安格斯厚牛堡，不要薯条和可乐');
+  check(rpPref[0].itemPrefs && rpPref[0].itemPrefs.length >= 2, '方案应带 itemPrefs（UI 勾选面板初始化用）');
+  check(rpPref[0].items.every(i => ['combo', 'single', 'comboPart'].indexOf(i.sourceType) >= 0),
+    '每个 item 必须带合法 sourceType（套餐/单点/套餐子项转单点）');
+  check(rpPref[0].mixSummary && typeof rpPref[0].mixSummary.text === 'string', '有子项偏好时方案应带 mixSummary.text');
+  check((rpPref[0].tradeoffExplanation || []).some(s => s.indexOf('不支持套餐改配') >= 0),
+    'tradeoffExplanation 必须写明官方不支持套餐改配（边界诚实）');
+  check(rpPref[0].weights && typeof rpPref[0].weights.price === 'number', '方案应带四维权衡 weights');
+  check(rpPref[0].comboCompare == null || Array.isArray(rpPref[0].comboCompare), 'comboCompare 要么是数组要么 null');
+  // 无子项偏好时对比字段为 null（不给普通方案硬编对比）
+  const rpPlain = await S.recommendPlans('2个人，100块');
+  check(rpPlain[0].mixSummary === null && rpPlain[0].comboCompare === null, '无子项偏好时对比字段为 null');
+  // 离线快照数据必须标 simulated（四维对比是预演，不是已校验）
+  check(rpPref[0].simulated === true && rpPref[0].priceSource === 'snapshot', '离线数据必须标 simulated/snapshot');
+  // UI 滑块权重透传
+  const rpW = await S.recommendPlans({ text: '2个人，100块，不要薯条', weights: { price: 3, kcal: 1, protein: 1, taste: 0.2 } });
+  check(rpW[0].weights && rpW[0].weights.price === 3, 'UI 滑块权重应透传到方案（不写死）');
+  // comboPart 记账完整性：fromCombo 必有，源套餐不与拆开子项同版
+  const partPlans = rpPref.filter(pl => pl.items.some(i => i.sourceType === 'comboPart'));
+  if (partPlans.length) {
+    check(partPlans.every(pl => pl.items.filter(i => i.sourceType === 'comboPart').every(i => i.fromCombo)),
+      'comboPart 项必须带 fromCombo（从哪个套餐拆的）');
+    check(partPlans.every(pl => pl.items.filter(i => i.sourceType === 'comboPart')
+      .every(i => !pl.items.some(j => j.sourceType !== 'comboPart' && j.name === i.fromCombo))),
+      '源套餐整份不得与自己的拆开子项同版出现');
+  }
+  console.log(`   混合方案：${partPlans.length}/${rpPref.length} 版含拆开子项｜` +
+    `${rpPref[0].mixSummary ? rpPref[0].mixSummary.text : '无 mix'}｜simulated=${rpPref[0].simulated}`);
   // assignOrders：合单模式（一人点完所有人）
   const ap2 = await S.recommendPlans('3个人，100块');
   const tg = await S.assignOrders(ap2[0].planId, { members: ['甲', '乙', '丙'], orderMode: 'together' });

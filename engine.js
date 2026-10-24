@@ -153,12 +153,19 @@ function wpick(list, wfn, rnd) {
   return list[list.length - 1];
 }
 
-function buildOnce(ctx, mode, rnd) {
+function buildOnce(ctx, mode, rnd, seed) {
   var N = ctx.people, G = ctx.goal;
   var cap = ctx.unlimited ? Infinity : ctx.bmax;
   var P = ctx.pools;
   var items = [], spent = 0, kcal = 0, protein = 0, nutKnown = 0, nutTotal = 0;
   var mainCover = 0, i;
+
+  // 混合方案种子：「套餐子项转单点」的候选从这里起步——先把你想要的子项
+  // 按单点放进篮子（src:'comboPart' 记账），再按常规流程补齐其余部分。
+  if (seed && seed.length) {
+    seed.forEach(function (s) { items.push({ d: s.d, q: s.q || 1, src: s.src, fromCombo: s.fromCombo }); });
+    recalc();
+  }
 
   function rest() { return cap === Infinity ? Infinity : cap - spent; }
   function push(d, q) {
@@ -178,7 +185,8 @@ function buildOnce(ctx, mode, rnd) {
   }
 
   // ① 多人进行时，先赌一盘分享装（比一人一份更划算，也更符合聚餐场景）
-  var wantShare = (N >= 3) && rnd() < (0.3 + 0.45 * mode);
+  // 混合方案带了种子就不赌分享装——种子是用户明确的子项选择，别被随机打乱
+  var wantShare = !seed && (N >= 3) && rnd() < (0.3 + 0.45 * mode);
   if (wantShare && P.share.length) {
     var sh = wpick(P.share, function (d) {
       return ctx.itemW(d, mode) * (d.price <= rest() ? 1 : 0.001) * (0.6 + 0.4 * mode);
@@ -318,8 +326,17 @@ function scorePlan(p, ctx, mode) {
   // 营养数据完整度：优先推官方有数据的组合，热量那一栏才站得住
   var cov = p.nutRate;
 
-  var W = 22 * pFit + 20 * kFit + 11 * dealFit + 11 * proFit
-        + 9 * variety + 14 * goalBonus + 7 * cov + 6 * clamp(1 - Math.abs(1 - p.mainCover / N) * 1.4, 0, 1);
+  /* 口味/子项偏好贴合：用户说过「不要薯条」时，含薯条的套餐/单品在这里扣分。
+   * 没有子项偏好时 tasteFit 恒为 1，对所有方案是同一个常数，不改变排序
+   * ——这是向后兼容的关键：旧行为一分不变。 */
+  var tasteFit = ctx.prefIndex ? planTasteFit(p, ctx.prefIndex) : 1;
+
+  /* 权重：目标解析 + 调用方注入（UI 滑块）。默认全 1 时与旧系数一致，
+   * 只有注入/目标触发时才重新分配四维（价格/热量/蛋白/口味）的话事权。 */
+  var W4 = ctx.weights || { price: 1, kcal: 1, protein: 1, taste: 1 };
+  var coverFit = clamp(1 - Math.abs(1 - p.mainCover / N) * 1.4, 0, 1);
+  var W = 22 * W4.price * pFit + 20 * W4.kcal * kFit + 11 * W4.price * dealFit + 11 * W4.protein * proFit
+        + 18 * W4.taste * tasteFit + 9 * variety + 14 * goalBonus + 7 * cov + 6 * coverFit;
   return W / 100;
 }
 
@@ -344,9 +361,21 @@ function makePlans(opt) {
   var excludeCodes = {};
   (opt.exclude || []).forEach(function (c) { if (c) excludeCodes[c] = true; });
 
-  // 套餐拆解对照表（套餐值得度权重用）
+  // 套餐拆解对照表（套餐值得度权重 / 子项价格都用它）
   var byCodeAll = {};
   dishes.forEach(function (d) { if (d && d.code) byCodeAll[d.code] = d; });
+
+  /* 子项偏好（套餐拆开的正确含义）：want/avoid 信号。
+   * avoid 且能对上菜单菜品的 → 并入菜品级排除（「不要薯条」就是别出现薯条）；
+   * 对不上菜单的子项（可乐中杯）→ 只参与套餐口味匹配与拆开候选，不建排除。 */
+  var prefIndex = buildPrefIndex(opt.itemPrefs, dishes);
+  prefIndex.list.forEach(function (e) {
+    if (e.pref !== 'avoid' || !e.code) return;
+    if (byCodeAll[e.code]) excludeCodes[e.code] = true;
+  });
+
+  // 多维权衡权重（目标解析 + 注入）
+  var weights = normWeights(opt, goal);
 
   // 硬过滤：忌口 + 官方算价通过 + 剔除周边 / 单独酱料包等非餐品
   //        + 菜品级排除（用户点名不要的）+ 单点模式（套餐整体出局）
@@ -356,9 +385,8 @@ function makePlans(opt) {
     if (hitAvoid(d, avoid)) return false;
     if (d.role === 'value') return false;
     if (excludeCodes[d.code]) return false;
-    /* 单点畅吃：候选池排除套餐。官方分类把一部分套装（X三件套/X套餐）
-     * 归在了「主食」里，只按 role 过滤会漏，这里按品名再补一刀。 */
-    if (singlesOnly && (d.role === 'combo' || /(套餐|组合|桶|分享餐|件套)/.test(d.name || ''))) return false;
+    /* 单点畅吃：候选池排除套餐（含官方归类在「主食」里的三件套/套餐，见 isComboLike） */
+    if (singlesOnly && isComboLike(d)) return false;
     return true;
   });
 
@@ -409,6 +437,16 @@ function makePlans(opt) {
     var w = 1;
     w *= 1 + clamp((d.save || 0) / 12, 0, 1.3);                 // 有折扣的更香
     w *= comboWorthWeight(d, byCodeAll);                        // 套餐 vs 拆开单点：差价维度
+    /* 子项偏好：用户点名的菜品加权；含「不想要」子项的套餐软性降权
+     * （软性，不硬禁——价格足够划算时整份套餐仍可能赢，让打分决定） */
+    if (prefIndex.list.length) {
+      var pf = prefIndex.match(d.name);
+      if (pf && pf.pref === 'want') w *= 1.5;
+      if (isComboLike(d)) {
+        var fit = comboPartFit(d, prefIndex);
+        if (fit.avoided.length) w *= 0.55;
+      }
+    }
     if (isNewDish(d)) w *= (goal.novelty ? 3.6 : 1.4);          // 官方 tags 里的「上新 / 限定」
     if (isPromoDish(d)) w *= (goal.novelty ? 1.8 : 1.25);       // 促销 / 麦金卡优惠
     if (d.taste.indexOf('人气') >= 0) w *= 1.35;                // 官方「人气热卖」标记
@@ -440,7 +478,9 @@ function makePlans(opt) {
     return w;
   }
 
-  var ctx = { people: people, goal: goal, bmin: bmin, bmax: bmaxEff, unlimited: !!opt.unlimited, pools: pools, itemW: itemW };
+  var ctx = { people: people, goal: goal, bmin: bmin, bmax: bmaxEff, unlimited: !!opt.unlimited,
+              pools: pools, itemW: itemW, prefIndex: prefIndex, weights: weights,
+              byCode: byCodeAll, avoid: avoid };
   var MODES = [
     { k:'A', tier:'budget', mode:0.12, name:'省钱聚餐版', sub:'预算内把人均压到最低，主食一口不少',
       patch:function (g) { return { thrifty:1, novelty:0, rich:0, protein:Math.min(g.protein, 1.2) }; } },
@@ -455,7 +495,8 @@ function makePlans(opt) {
   MODES.forEach(function (M, mi) {
     // 每档用自己的那份目标参数，人数/预算/忌口共享
     var ctx = { people: people, goal: Object.assign({}, goal, M.patch(goal)),
-                bmin: bmin, bmax: bmaxEff, unlimited: !!opt.unlimited, pools: pools, itemW: itemW };
+                bmin: bmin, bmax: bmaxEff, unlimited: !!opt.unlimited, pools: pools, itemW: itemW,
+                prefIndex: prefIndex, weights: weights, byCode: byCodeAll, avoid: avoid };
     var best = [], seen = {};
     for (var t = 0; t < 900; t++) {
       var p = buildOnce(ctx, M.mode, rnd);
@@ -469,6 +510,44 @@ function makePlans(opt) {
       p.score = s;
       best.push(p);
       if (best.length > 40) break;
+    }
+    /* ---- 混合方案候选：套餐子项单点化 ----
+     * 用户表达了子项偏好时，为每个相关套餐生成一个确定性候选：
+     * 剔掉不想要的子项、其余能对上菜单价的子项按单点起步，再补齐一餐。
+     * 它与随机生成的「买整份套餐」候选进同一个打分池——谁分高谁上，
+     * 不预设拆开更好，也不预设整份更好。 */
+    if (prefIndex.list.length) {
+      var combosWithParts = dishes.filter(function (d) {
+        return d && d.ok === true && isComboLike(d) && d.parts && d.parts.length;
+      });
+      combosWithParts.forEach(function (c) {
+        var fit = comboPartFit(c, prefIndex);
+        if (!fit.avoided.length && !fit.wanted.length) return;   // 与偏好无关：不进混合候选
+        var seed = [];
+        (c.parts || []).forEach(function (pt) {
+          if (fit.avoided.indexOf(pt.name) >= 0) return;         // 不想要的子项：不买
+          var sub = byCodeAll[pt.code];
+          if (!sub || !(sub.price > 0) || sub.ok !== true) return;  // 菜单内无单点价：买不到，不编
+          if (hitAvoid(sub, avoid)) return;                      // 忌口挡住
+          seed.push({ d: sub, q: pt.qty || 1, src: 'comboPart', fromCombo: c.name });
+        });
+        if (!seed.length) return;
+        /* 补齐阶段的候选池剔掉源套餐本身——都已经把它的子项拆开单点了，
+         * 再把整份加回来是自相矛盾（其余含忌子项的套餐不硬禁，交给口味扣分）。 */
+        var poolsMix = {
+          main: pools.main.filter(function (d) { return d.code !== c.code; }),
+          share: pools.share, snack: pools.snack, drink: pools.drink, dessert: pools.dessert
+        };
+        var ctxMix = Object.assign({}, ctx, { pools: poolsMix });
+        var mp = buildOnce(ctxMix, M.mode, rnd, seed);
+        if (!mp) return;
+        if (bmaxEff !== Infinity && mp.total > bmaxEff + 1e-6) return;
+        var sg2 = sig(mp);
+        if (seen[sg2]) return;
+        seen[sg2] = 1;
+        mp.score = scorePlan(mp, ctx, M.mode);
+        if (mp.score >= -1e5) best.push(mp);
+      });
     }
     best.sort(function (a, b2) { return b2.score - a.score; });
     out[mi] = best;
@@ -547,6 +626,19 @@ function makePlans(opt) {
     }
   });
 
+  /* ---- 混合方案汇总：mixSummary / tradeoffExplanation / 四维对比 ----
+   * 在点名菜插入之后算——那时 totals 才是最终值。没有子项偏好且没有拆开子项的
+   * 方案不产这份字段（不给普通方案硬编对比）。 */
+  plans.forEach(function (p) {
+    p.weights = Object.assign({}, weights);
+    var mix = summarizeMix(p, prefIndex);
+    if (mix) {
+      p.mixSummary = mix;
+      p.tradeoffExplanation = mix.tradeoffExplanation;
+      p.comboCompare = mix.comboCompare;
+    }
+  });
+
   if (!plans.length) {
     return {
       error: '这个预算 / 忌口组合下，没有凑出合适的方案',
@@ -558,7 +650,8 @@ function makePlans(opt) {
     };
   }
   return { plans: plans, pool: pool, goal: goal, people: people, wanted: wantedResolved,
-           modes: { singlesOnly: singlesOnly, lateNight: lateNight } };
+           modes: { singlesOnly: singlesOnly, lateNight: lateNight },
+           itemPrefs: prefIndex.list, weights: weights };
 }
 
 function minPrice(list) {
@@ -887,6 +980,334 @@ function comboWorthWeight(dish, byCode) {
   return 1;
 }
 
+/* ------------------------------------------------ 子项偏好（套餐拆开的正确含义）
+   用户澄清后的真实场景：「我想要套餐里的某部分、不想要另一部分，于是考虑把想要的
+   子项单点，哪怕不如整套餐划算；最终方案里单点哪些、套餐哪些，同时看价格、营养、口味」。
+   注意与两个既有概念的分工：
+     · singlesOnly「单点畅吃」= 全单点，一个套餐都不要（特色模式，用户点名要的）
+     · 旧「X套餐只要A、B」= 显式强制拆开（parseQuery 里那段，确定性行为）
+     · 本模型 = 子项级 want/avoid 信号，喂给多目标优化，让「整套餐 vs 拆开单点」
+       在同一个打分里竞争——不是默认拆开，是让数据决定。
+   官方边界：MCP 没有套餐改配接口（calculate-price 只按标准餐品算），
+   所以「去掉薯条的汉堡套餐」买不到——要么整份，要么子项单点，UI 必须写明。 */
+var ITEM_PREF_POS_RE = /(想要|想吃|喜欢|爱吃|要来|点一|加一|整一|馋)/;
+var NEG_RE_ITEM = /(不要|不想|不爱|不喜欢|别|去掉|免了|排除|换掉|拿走|减去|少了|无辣)/;
+
+/* 从文本里解析子项/菜品偏好。返回 [{name, mention, code, pref:'want'|'avoid', source:'text'}]。
+ * 匹配对象包含菜单菜品和套餐子项两部分——子项对不上菜单也要能标偏好
+ * （「不要可乐」：可乐中杯在菜单里没有单点价，但套餐里的它照样要不买）。
+ * 匹配用「去边字」变体：官方子项名常带用户不会说的边字
+ * （芝士安格斯厚牛堡/中薯条/可乐中杯/麦乐鸡4块），砍掉前后少量字后再到句子里找，
+ * 命中位置决定否定/肯定窗口。mention 记下用户原话，UI 回填时显示它。
+ * 显式套餐拆开句式（「X套餐只要A、B」「把X套餐拆开」）由 parseQuery 旧逻辑
+ * 确定性处理，这里先把片段挖掉，避免同一句话被两种语义重复消费。 */
+function parseItemPrefs(text, dishes) {
+  var t = text || '';
+  if (!t || !dishes || !dishes.length) return [];
+  var stripped = t
+    .replace(/([\u4e00-\u9fa5A-Za-z0-9]{2,12}?(?:套餐|组合|桶|分享餐|双人餐|多人餐))\s*(?:里|中|内|里面)?\s*(?:只要|只点|只想要|想要|要|加|加上)\s*([\u4e00-\u9fa5A-Za-z0-9、和及跟，,]{2,30})/g, ' ')
+    .replace(/(?:把|将)?\s*([\u4e00-\u9fa5A-Za-z0-9]{2,12}?(?:套餐|组合|桶|分享餐|双人餐|多人餐))\s*拆开/g, ' ');
+  var targets = [];
+  dishes.forEach(function (d) {
+    if (!d || !d.name || d.name.length < 2) return;
+    var isDish = d.ok === true && isFood(d);
+    if (isDish) targets.push({ name: d.name, code: d.code || null, isDish: true });
+    (d.parts || []).forEach(function (p) {
+      if (p && p.name && p.name.length >= 2) targets.push({ name: p.name, code: p.code || null, isDish: false });
+    });
+  });
+  // 每个目标名的匹配变体：砍掉前 ≤2 字、后 ≤3 字（规格/口味边字），保留 ≥2 字
+  function variants(name) {
+    var out = [name];
+    for (var i = 1; i <= 2 && i < name.length - 1; i++) {
+      for (var j = 0; j <= 3 && i + j < name.length - 1; j++) {
+        var v = name.slice(i, name.length - j);
+        if (v.length >= 2 && out.indexOf(v) < 0) out.push(v);
+      }
+    }
+    return out;
+  }
+  // 同一句原话命中多个目标时留哪个：用户原话=标准品名 > 菜单单品 > 更短名 > 先到者。
+  // 「不要薯条」会同时命中 中薯条/脆脆薯条/小薯条/迷你薯条/薯条，只留标准品「薯条」，
+  // 其余变体在 buildPrefIndex 的模糊匹配里照样生效，不回填出一屏重复行。
+  function betterCand(a, b) {
+    if ((a.name === a.mention) !== (b.name === b.mention)) return a.name === a.mention;
+    if (a.isDish !== b.isDish) return a.isDish;
+    if (a.name.length !== b.name.length) return a.name.length < b.name.length;
+    return false;
+  }
+  var out = [], seen = {};
+  stripped.split(/[，。；！？、,\.!;\?~～\s]+/).forEach(function (seg) {
+    if (!seg || seg.length < 2) return;
+    var hits = [];
+    targets.forEach(function (tg) {
+      variants(tg.name).forEach(function (v) {
+        var idx = seg.indexOf(v);
+        if (idx >= 0) hits.push({ tg: tg, v: v, idx: idx });
+      });
+    });
+    if (!hits.length) return;
+    // 只认最长原话：「想吃巨无霸」里 3 字「巨无霸」必须赢 2 字变体「无霸」，
+    // 否则「无霸」会误命中巨无霸三件套/四件套。
+    var maxLen = 0;
+    hits.forEach(function (h) { if (h.v.length > maxLen) maxLen = h.v.length; });
+    var byMention = {};
+    hits.forEach(function (h) {
+      if (h.v.length < maxLen) return;
+      var win = seg.slice(Math.max(0, h.idx - 6), h.idx);
+      var after = seg.slice(h.idx + h.v.length, h.idx + h.v.length + 4);
+      var pref = null;
+      if (NEG_RE_ITEM.test(win) || NEG_RE_ITEM.test(after)) pref = 'avoid';
+      else if (ITEM_PREF_POS_RE.test(win)) pref = 'want';
+      if (!pref) return;
+      var cand = { name: h.tg.name, mention: h.v, code: h.tg.code, pref: pref, source: 'text', isDish: h.tg.isDish };
+      var k = h.v + '|' + pref;
+      if (!byMention[k] || betterCand(cand, byMention[k])) byMention[k] = cand;
+    });
+    Object.keys(byMention).forEach(function (k) {
+      var c = byMention[k];
+      var nk = c.name + '|' + c.pref;
+      if (seen[nk]) return;
+      seen[nk] = 1;
+      out.push({ name: c.name, mention: c.mention, code: c.code, pref: c.pref, source: 'text' });
+    });
+  });
+  return out;
+}
+
+/* 偏好索引：按菜名/子项名模糊匹配（nameMatchScore>0 即算命中，取最高分）。
+ * 为什么允许模糊：用户说「可乐」，套餐里叫「可乐中杯」；说「薯条」，
+ * 子项叫「中薯条」——完全相等反而对不上。 */
+function buildPrefIndex(prefs, dishes) {
+  var list = (prefs || []).filter(function (p) { return p && p.name; }).map(function (p) {
+    return { name: p.name, code: p.code || null, pref: p.pref === 'avoid' ? 'avoid' : 'want', source: p.source || 'panel' };
+  });
+  var byCode = {};
+  (dishes || []).forEach(function (d) { if (d && d.code) byCode[d.code] = d; });
+  return {
+    list: list,
+    byCode: byCode,
+    match: function (name) {
+      if (!list.length || !name) return null;
+      var best = null, bestScore = 0;
+      list.forEach(function (e) {
+        var s = nameMatchScore(name, e.name);
+        if (s > bestScore) { best = e; bestScore = s; }
+      });
+      return best;
+    }
+  };
+}
+
+/* 官方分类把一部分套装（X三件套/X套餐）归在「主食」里，role 不是 combo——
+ * 但品名带 套/桶/套餐 字样、且带 parts 的，用户眼里就是套餐。子项偏好、
+ * 混合方案、角标都按这个口径来，与 singlesOnly 的池过滤保持一致。
+ * （「不要薯条」必须罚得到巨无霸三件套——它的 role 是 main，不是 combo。） */
+function isComboLike(d) {
+  return !!d && (d.role === 'combo' || /(套餐|组合|桶|分享餐|件套)/.test(d.name || ''));
+}
+
+/* 一个菜品（套餐或单品）在当前子项偏好下的口味匹配。
+ * 套餐：逐子项比对 → wanted/avoided/unresolved（unresolved = 菜单内无单点价，买不到）；
+ * 单品：本身被标 avoid 即冲突。
+ * taste: 'match' 全部匹配 / 'conflict' 含不想要的子项。 */
+function comboPartFit(dish, prefIndex) {
+  var out = { wanted: [], avoided: [], unresolved: [], taste: 'match', note: '' };
+  if (!dish || !prefIndex) return out;
+  if (!isComboLike(dish) || !dish.parts || !dish.parts.length) {
+    var p = prefIndex.match(dish.name);
+    if (p && p.pref === 'avoid') {
+      out.avoided = [dish.name]; out.taste = 'conflict'; out.note = '这道菜你说过不想要';
+    } else if (p && p.pref === 'want') {
+      out.wanted = [dish.name]; out.note = '你点名的菜品';
+    }
+    return out;
+  }
+  (dish.parts || []).forEach(function (pt) {
+    var pref = prefIndex.match(pt.name);
+    var sub = prefIndex.byCode[pt.code];
+    var resolvable = !!(sub && typeof sub.price === 'number' && sub.price > 0);
+    if (pref && pref.pref === 'avoid') out.avoided.push(pt.name);
+    else if (pref && pref.pref === 'want') out.wanted.push(pt.name);
+    if (!resolvable) out.unresolved.push(pt.name);
+  });
+  out.taste = out.avoided.length ? 'conflict' : 'match';
+  out.note = out.avoided.length
+    ? '含 ' + out.avoided.length + ' 项你不想要的子项：' + out.avoided.join('、')
+    : (out.wanted.length ? '含你点名的子项：' + out.wanted.join('、') : '全部匹配');
+  return out;
+}
+
+/* 方案级口味贴合度 0..1：含「不想要」内容的件数占比。没有偏好时恒 1
+ * （对所有方案一致，不改变既有排序——向后兼容的关键）。 */
+function planTasteFit(p, prefIndex) {
+  if (!prefIndex || !prefIndex.list.length || !p || !p.items) return 1;
+  var bad = 0, total = 0;
+  p.items.forEach(function (it) {
+    total += it.q;
+    var fit = comboPartFit(it.d, prefIndex);
+    bad += fit.avoided.length * it.q;
+  });
+  return clamp(1 - bad / Math.max(1, total), 0, 1);
+}
+
+/* 多维权衡权重：price/kcal/protein/taste。
+ * 来源 = 目标解析（省钱→价格↑、减脂→热量↑、高蛋白→蛋白↑、有子项偏好→口味↑）
+ *      + 调用方注入（UI 滑块以后从这里进）。默认全 1，与旧分数量级兼容。 */
+function normWeights(opt, goal) {
+  var w = { price: 1, kcal: 1, protein: 1, taste: 1 };
+  var inj = (opt && opt.weights) || {};
+  ['price', 'kcal', 'protein', 'taste'].forEach(function (k) {
+    if (inj[k] != null && isFinite(+inj[k])) w[k] = clamp(+inj[k], 0, 3);
+  });
+  if (goal) {
+    if (goal.thrifty) w.price *= 1.6;
+    if (goal.key === 'lose') w.kcal *= 1.6;
+    if (goal.protein >= 1.5) w.protein *= 1.6;
+  }
+  return w;
+}
+
+/* 套餐 vs 拆开单点的四维对比（价格/热量/蛋白质/口味匹配）。
+ * 套餐侧用套餐官方价与官方营养；单点侧 = 不要的子项剔掉后、能对上菜单价的子项合计。
+ * 子项无价/无营养的一律 null + note，不编。 */
+function comboFourDim(combo, prefIndex) {
+  if (!combo || !isComboLike(combo) || !combo.parts || !combo.parts.length) return null;
+  var fit = comboPartFit(combo, prefIndex);
+  var keepKcal = 0, keepPro = 0, keepPrice = 0, kcalKnown = true, proKnown = true;
+  (combo.parts || []).forEach(function (pt) {
+    if (fit.avoided.indexOf(pt.name) >= 0) return;      // 不想要的子项：不买
+    var sub = prefIndex.byCode[pt.code];
+    if (!sub || !(sub.price > 0)) return;               // 菜单内无单点价：买不到，不计入
+    keepPrice += sub.price * (pt.qty || 1);
+    if (hasKcal(sub)) { keepKcal += sub.kcal * (pt.qty || 1); keepPro += (sub.protein || 0) * (pt.qty || 1); }
+    else { kcalKnown = false; proKnown = false; }
+  });
+  if (!(keepPrice > 0)) return null;
+  var dPrice = Math.round((keepPrice - combo.price) * 100) / 100;
+  var dKcal = kcalKnown && hasKcal(combo) ? Math.round(keepKcal - combo.kcal) : null;
+  var dPro = proKnown && typeof combo.protein === 'number'
+    ? Math.round((keepPro - combo.protein) * 10) / 10 : null;
+  return {
+    combo: combo.name, comboCode: combo.code,
+    price: { combo: round2(combo.price), parts: round2(keepPrice), delta: dPrice, cheaper: dPrice < 0 ? 'parts' : 'combo' },
+    kcal: dKcal == null ? null : { combo: Math.round(combo.kcal), parts: Math.round(keepKcal), delta: dKcal },
+    protein: dPro == null ? null : { combo: combo.protein, parts: Math.round(keepPro * 10) / 10, delta: dPro },
+    taste: {
+      combo: fit.note, parts: fit.avoided.length ? '全部匹配（已避开 ' + fit.avoided.join('、') + '）' : '全部匹配',
+      winner: fit.avoided.length ? 'parts' : 'tie'
+    },
+    unresolvedParts: fit.unresolved,
+    avoidedParts: fit.avoided,
+    note: fit.unresolved.length
+      ? '子项 ' + fit.unresolved.join('、') + ' 在菜单内没有单点价，无法单点购买，未计入单点侧'
+      : ''
+  };
+}
+function round2(v) { return Math.round(v * 100) / 100; }
+/* 金额格式化：与 service.yuan 同规则（整数不带 .00）。引擎内自备一份——
+ * 拆开候选的人话解释要用，不能借 service 的（引擎是纯函数，不依赖 service）。 */
+function yuan(v) {
+  return '¥' + (Math.round(v * 100) / 100).toFixed(2).replace(/\.00$/, '');
+}
+
+/* 方案级 mixSummary + tradeoffExplanation + comboCompare。
+ * 只在方案里真的出现「套餐子项转单点」或用户有子项偏好时产出，否则 null——
+ * 不给没有拆开的方案硬编一份对比。 */
+function summarizeMix(plan, prefIndex) {
+  if (!plan || !plan.items) return null;
+  var fullCombos = 0, singles = 0, comboParts = 0;
+  var fromCombos = [];
+  plan.items.forEach(function (it) {
+    if (it.src === 'comboPart') {
+      comboParts += it.q;
+      var fc = fromCombos.filter(function (x) { return x.combo === it.fromCombo; })[0];
+      if (!fc) { fc = { combo: it.fromCombo, parts: [] }; fromCombos.push(fc); }
+      if (fc.parts.indexOf(it.d.name) < 0) fc.parts.push(it.d.name);
+    } else if (isComboLike(it.d)) fullCombos += it.q;
+    else singles += it.q;
+  });
+  var hasPrefs = prefIndex && prefIndex.list.length;
+  if (!comboParts && !hasPrefs) return null;
+
+  var compare = [];
+  if (hasPrefs) {
+    var seenCombo = {};
+    plan.items.forEach(function (it) {
+      if (!isComboLike(it.d) || seenCombo[it.d.code]) return;
+      seenCombo[it.d.code] = 1;
+      var c = comboFourDim(it.d, prefIndex);
+      if (c) compare.push(c);
+    });
+    fromCombos.forEach(function (fc) {
+      // 拆开的源套餐：如果方案里没买整份，也要给它一份四维对比
+      var combo = null;
+      plan.items.forEach(function (it) { if (it.d.name === fc.combo) combo = it.d; });
+      if (!combo) {
+        Object.keys(prefIndex.byCode).forEach(function (code) {
+          var d = prefIndex.byCode[code];
+          if (!combo && isComboLike(d) && d.name === fc.combo) combo = d;
+        });
+      }
+      if (combo && !seenCombo[combo.code]) {
+        seenCombo[combo.code] = 1;
+        var c2 = comboFourDim(combo, prefIndex);
+        if (c2) compare.push(c2);
+      }
+    });
+  }
+
+  var mixText = '本方案含 ' + fullCombos + ' 个完整套餐 + ' + singles + ' 个单点' +
+    (comboParts ? ' + ' + comboParts + ' 个套餐子项转单点' : '');
+  fromCombos.forEach(function (fc) {
+    mixText += '；「' + fc.combo + '」拆开：只要 ' + fc.parts.join('、');
+  });
+
+  var tradeoff = [];
+  fromCombos.forEach(function (fc) {
+    // 找源套餐，算「买整份 vs 拆开」的差
+    var combo = null;
+    Object.keys(prefIndex.byCode).forEach(function (code) {
+      var d = prefIndex.byCode[code];
+      if (!combo && isComboLike(d) && d.name === fc.combo) combo = d;
+    });
+    if (!combo) return;
+    var partsPrice = 0, partsKcal = 0, kcalOk = true;
+    fc.parts.forEach(function (pn) {
+      (combo.parts || []).forEach(function (pt) {
+        if (pt.name !== pn) return;
+        var sub = prefIndex.byCode[pt.code];
+        if (!sub || !(sub.price > 0)) return;
+        partsPrice += sub.price * (pt.qty || 1);
+        if (hasKcal(sub)) partsKcal += sub.kcal * (pt.qty || 1); else kcalOk = false;
+      });
+    });
+    var dPrice = Math.round((partsPrice - combo.price) * 100) / 100;
+    var fit = comboPartFit(combo, prefIndex);
+    var bits = [];
+    bits.push(dPrice > 0 ? '比买整份贵 ' + yuan(dPrice) : (dPrice < 0 ? '比买整份省 ' + yuan(-dPrice) : '与整份同价'));
+    if (kcalOk && hasKcal(combo)) {
+      var dK = Math.round(partsKcal - combo.kcal);
+      bits.push(dK > 0 ? '多 ' + dK + ' kcal' : '少 ' + (-dK) + ' kcal');
+    } else {
+      bits.push('热量部分子项官方无数据，未估算');
+    }
+    if (fit.avoided.length) bits.push('避开了 ' + fit.avoided.join('、'));
+    tradeoff.push('「' + combo.name + '」拆开单点：' + bits.join('，'));
+  });
+  tradeoff.push('官方 MCP 不支持套餐改配（没有改配接口，算价只按标准餐品）：不能让套餐去掉某个子项。' +
+    '要么买整份套餐，要么像上面这样把想要的子项按单点买——本方案按后者处理。');
+  if (compare.length && compare.some(function (c) { return c.unresolvedParts.length; })) {
+    tradeoff.push('有子项在菜单内没有单点价，无法单点购买，已按买不到处理，未编价。');
+  }
+
+  return {
+    fullCombos: fullCombos, singles: singles, comboParts: comboParts,
+    fromCombos: fromCombos, text: mixText,
+    tradeoffExplanation: tradeoff, comboCompare: compare
+  };
+}
+
 /* ------------------------------------------------ 多人拆单（问题一）
    把「总需求清单」按成员拆成各自的小单，再给每张小额单配一张券。
    约束与假设（全部对用户明示）：
@@ -979,6 +1400,9 @@ var API = {
   makePlans: makePlans, nutritionOf: nutritionOf, hasKcal: hasKcal,
   splitBill: splitBill, largestRemainder: largestRemainder,
   comboBreakdown: comboBreakdown, comboWorthWeight: comboWorthWeight,
+  parseItemPrefs: parseItemPrefs, buildPrefIndex: buildPrefIndex, comboPartFit: comboPartFit,
+  comboFourDim: comboFourDim, planTasteFit: planTasteFit, normWeights: normWeights,
+  summarizeMix: summarizeMix, isComboLike: isComboLike,
   nameMatchScore: nameMatchScore, pickBestDish: pickBestDish, isFood: isFood,
   parseCouponRule: parseCouponRule, matchCouponDish: matchCouponDish, estimateCouponCut: estimateCouponCut,
   parseCouponType: parseCouponType, couponApplies: couponApplies, parseDining: parseDining,

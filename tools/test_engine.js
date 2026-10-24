@@ -262,6 +262,101 @@ if (worthDown) check(E.comboWorthWeight(worthDown, byCodeAll) === 0.72, '套餐�
 check(E.comboWorthWeight(D.dishes.filter(d => d.role !== 'combo')[0], byCodeAll) === 1, '非套餐权重恒 1');
 console.log(`   套餐值得度：加权 ${combosWithParts.filter(c => E.comboWorthWeight(c, byCodeAll) === 1.3).length} 个 / 降权 ${combosWithParts.filter(c => E.comboWorthWeight(c, byCodeAll) === 0.72).length} 个 / 持平 ${combosWithParts.filter(c => E.comboWorthWeight(c, byCodeAll) === 1).length} 个`);
 
+/* =========================================================
+   子项偏好 + 混合方案（套餐拆开的正确含义）
+   「我想要安格斯厚牛堡，不要薯条和可乐」——不是全单点、不是套餐改配，
+   而是 want/avoid 信号喂多目标优化，让「整套餐 vs 拆开单点」同池竞争。
+   ========================================================= */
+console.log('\n■ 子项偏好与混合方案');
+
+/* ① parseItemPrefs：want/avoid 解析质量 */
+const pf1 = E.parseItemPrefs('我想要安格斯厚牛堡，不要薯条和可乐', D.dishes);
+check(pf1.some(p => p.pref === 'want' && /安格斯厚牛堡/.test(p.name)), '「想要安格斯厚牛堡」应解析出 want');
+check(pf1.filter(p => p.pref === 'want').length === 1, 'want 只留一条最具体的（同义多规格去重）');
+check(pf1.some(p => p.pref === 'avoid' && p.name === '薯条'), '「不要薯条」应解析出 avoid（标准品名，去边字命中）');
+check(pf1.some(p => p.pref === 'avoid' && /可乐/.test(p.name)), '「不要可乐」应解析出 avoid');
+check(pf1.filter(p => p.pref === 'avoid').length === 2, 'avoid 应恰好 2 条（5 种薯条规格合并成 1 条）');
+check(pf1.every(p => p.mention && p.mention.length >= 2), '每条偏好都带 mention（UI 回填用户原话）');
+const pf2 = E.parseItemPrefs('想吃巨无霸，别放可乐', D.dishes);
+check(pf2.some(p => p.pref === 'want' && p.name === '巨无霸'), '「想吃巨无霸」应解析出 want 巨无霸');
+check(pf2.every(p => p.pref !== 'want' || p.name === '巨无霸'), '「无霸」过短变体不得误命中三件套/四件套');
+const pf3 = E.parseItemPrefs('安格斯厚牛堡套餐只要汉堡和薯条', D.dishes);
+check(pf3.length === 0, '显式拆开句式交给 parseQuery 旧逻辑，这里零输出（不重复消费）');
+check(E.parseItemPrefs('3个人100块', D.dishes).length === 0, '没有偏好表达时零输出');
+console.log(`   解析样例：${pf1.map(p => p.pref + ':' + p.name + '(' + p.mention + ')').join(' / ')}`);
+
+/* ② comboPartFit：role=main 的套装（巨无霸三件套）也拆得动——isComboLike 口径 */
+const bigMac3 = D.dishes.filter(d => d.name === '巨无霸三件套')[0];
+const pfIdx = E.buildPrefIndex(pf1, D.dishes);
+if (bigMac3) {
+  const fit = E.comboPartFit(bigMac3, pfIdx);
+  check(fit.avoided.indexOf('中薯条') >= 0 && fit.avoided.indexOf('可乐中杯') >= 0,
+    '巨无霸三件套（官方 role=main）应识别出忌子项 中薯条/可乐中杯');
+  check(fit.taste === 'conflict', '含忌子项 → taste=conflict');
+} else check(false, '数据里应有巨无霸三件套');
+check(E.planTasteFit({ items: [{ q: 1, d: bigMac3 }] }, E.buildPrefIndex([], D.dishes)) === 1,
+  '无子项偏好时口味匹配恒 1（向后兼容：旧排序一分不变）');
+
+/* ③ 混合方案生成：拆开候选进同一打分池，sourceType/fromCombo 记账 */
+const rmix = E.makePlans({ dishes: D.dishes, people: 2, bmax: 100, goal: '',
+  itemPrefs: pf1, seed: 20261025 });
+if (!rmix.error) {
+  const allPlans = rmix.plans;
+  const withParts = allPlans.filter(p => p.items.some(i => i.src === 'comboPart'));
+  check(withParts.length > 0, '应出现「套餐子项转单点」候选（与整份同池竞争）');
+  check(allPlans.every(p => p.items.every(i => i.src !== 'comboPart' || i.fromCombo)),
+    'comboPart 项必须带 fromCombo（告诉用户这是从哪个套餐拆的）');
+  // 拆出子项按官方菜单价计，不编价
+  const seedItem = withParts[0].items.filter(i => i.src === 'comboPart')[0];
+  const menuDish = D.dishes.filter(d => d.code === seedItem.d.code)[0];
+  check(menuDish && menuDish.price === seedItem.d.price, '拆出子项按菜单单点价计（官方数据，不估算）');
+  // 源套餐不与自己的拆开版同池出现（都已拆开了，再把整份加回来自相矛盾）
+  const badMix = withParts.filter(p => p.items.some(i => i.src === 'comboPart' &&
+    p.items.some(j => j.src !== 'comboPart' && j.d.name === i.fromCombo)));
+  check(badMix.length === 0, '源套餐整份不得与自己的拆开子项同版出现');
+  console.log(`   混合候选：${withParts.length}/${allPlans.length} 版含拆开子项，例：` +
+    withParts[0].items.map(i => (i.src === 'comboPart' ? '[拆]' : '') + i.d.name).join('+'));
+} else check(false, '带子项偏好的配餐不应报错');
+
+/* ④ 权重翻转：price 拉高整份套餐回归，taste 拉高套餐整体出局 */
+const W_PRICE = { price: 3, kcal: 1, protein: 1, taste: 0.2 };
+const W_TASTE = { price: 0.2, kcal: 1, protein: 1, taste: 3 };
+const rwP = E.makePlans({ dishes: D.dishes, people: 2, bmax: 100, goal: '', itemPrefs: pf1, weights: W_PRICE, seed: 20261025 });
+const rwT = E.makePlans({ dishes: D.dishes, people: 2, bmax: 100, goal: '', itemPrefs: pf1, weights: W_TASTE, seed: 20261025 });
+if (!rwP.error && !rwT.error) {
+  check(rwP.plans[0].items.some(i => E.isComboLike(i.d)),
+    '价格权重拉高：首版应含完整套餐（组合价更省）');
+  check(rwT.plans[0].items.every(i => !E.isComboLike(i.d)),
+    '口味权重拉高：首版不应含完整套餐（含忌子项的套餐被口味扣分压下去）');
+  check(rwT.plans.some(p => p.items.some(i => i.src === 'comboPart')),
+    '口味权重拉高：应出现套餐子项转单点');
+  console.log(`   权重翻转：price×3 首版含 ${rwP.plans[0].items.filter(i => E.isComboLike(i.d)).length} 个完整套餐 / ` +
+    `taste×3 首版含 ${rwT.plans[0].items.filter(i => E.isComboLike(i.d)).length} 个，` +
+    `拆开版 ${rwT.plans.filter(p => p.items.some(i => i.src === 'comboPart')).length} 版`);
+} else check(false, '权重翻转两组配餐都不应报错');
+
+/* ⑤ 官方不改配边界 + 四维对比 + 离线 simulated 标注 */
+if (!rmix.error) {
+  check(rmix.plans.every(p => (p.tradeoffExplanation || []).some(s => s.indexOf('不支持套餐改配') >= 0)),
+    '有子项偏好时每版都要写明「官方 MCP 不支持套餐改配」');
+  check(rmix.plans.every(p => !p.mixSummary || typeof p.mixSummary.text === 'string'),
+    'mixSummary.text 必须存在（人话总结）');
+  const cmp = rmix.plans.map(p => p.comboCompare).filter(Boolean)[0];
+  if (cmp && cmp.length) {
+    check(cmp.every(c => c.price && typeof c.price.combo === 'number' && typeof c.price.parts === 'number'),
+      '四维对比：价格维度 combo/parts 双值齐全');
+    check(cmp.every(c => c.kcal == null || (typeof c.kcal.combo === 'number' && typeof c.kcal.parts === 'number')),
+      '四维对比：热量维度要么双值齐全、要么 null（官方无数据不编）');
+    check(cmp.every(c => c.taste && typeof c.taste.winner === 'string'),
+      '四维对比：口味匹配维度 winner 存在');
+    console.log(`   四维对比样例：${cmp[0].combo} 整份¥${cmp[0].price.combo} vs 拆开¥${cmp[0].price.parts}，` +
+      `口味胜者 ${cmp[0].taste.winner}${cmp[0].unresolvedParts.length ? '，无价子项 ' + cmp[0].unresolvedParts.join('、') : ''}`);
+  } else check(false, '有子项偏好时应产出四维对比');
+  // 对不上面价的子项不得被编出单点价
+  const noPrice = D.dishes.filter(d => (d.parts || []).some(pt => pt.name === '可乐中杯'));
+  check(noPrice.length > 0, '数据里应存在含「可乐中杯」的套餐（官方无单点价的子项）');
+}
+
 console.log('\n' + '='.repeat(78));
 console.log(fail === 0 ? '✅ 全部断言通过' : `❌ ${fail} 条断言失败`);
 if (warned) console.log(`   另有 ${warned} 处已知边界（极端预算下的降级，已在上方 ⚠️ 标出）`);

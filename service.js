@@ -101,13 +101,15 @@
       wanted: [],           // 用户点名要的菜（「」「想吃X」），已校验成真实菜名
       wantedMeta: {},        // 点名菜 → {fromCombo: 套餐名}：从套餐里拆出来单点的
       exclude: [],           // 菜品级排除：「不要可乐」——与忌口（成分级）是两件事
+      itemPrefs: [],         // 子项偏好：「想要/不想要/无所谓」——喂多目标优化，不预设拆不拆
+      weights: null,         // 四维权衡 {price,kcal,protein,taste}：目标解析 + UI 滑块注入
       dining: null,          // 'dineIn' 到店/堂食 · 'delivery' 外送/麦乐送 · null 未说明
       orderMode: null,       // 'split' 各自点 · 'together' 一人点完所有人 · null 默认合单
       modes: { singlesOnly: false, lateNight: false },   // 单点畅吃 / 宵夜模式
       slot: null,
       matched: { people: false, budget: false, goal: false, avoid: [] },
       conflicts: [],
-      sources: { people: 'default', budget: 'default', avoid: 'default' },
+      sources: { people: 'default', budget: 'default', avoid: 'default', itemPrefs: 'default' },
       resolved: null        // 实际生效值快照，UI 双向同步用
     };
     // 控件原值（冲突检测的对照组）；只在传入对象时存在
@@ -122,7 +124,9 @@
         avoid: input.avoid ? input.avoid.slice() : null,
         dining: input.dining || null,
         orderMode: input.orderMode || null,
-        exclude: input.exclude ? input.exclude.slice() : null
+        exclude: input.exclude ? input.exclude.slice() : null,
+        itemPrefs: input.itemPrefs ? input.itemPrefs.slice() : null,
+        weights: input.weights || null
       };
       if (input.people) q.people = input.people;
       if (input.budgetMin != null) q.budgetMin = input.budgetMin;
@@ -134,6 +138,8 @@
       if (input.dining) q.dining = input.dining;
       if (input.orderMode) q.orderMode = input.orderMode;
       if (input.exclude) q.exclude = input.exclude.slice();
+      if (input.itemPrefs) q.itemPrefs = input.itemPrefs.slice();
+      if (input.weights) q.weights = input.weights;
     }
 
     /* 人数：阿拉伯数字 + 中文数字 */
@@ -267,6 +273,55 @@
       });
     }
 
+    /* ---- 子项偏好：「我想要安格斯厚牛堡，不要薯条和可乐」 ----
+     * 与下面「套餐拆开」的分工：拆开句式是确定性行为（子项转单点、原套餐排除）；
+     * 这里是 want/avoid 信号，喂给多目标优化，让「整套餐 vs 拆开单点」同池竞争——
+     * 不预设谁赢。控件回传（勾选面板）优先：同名/同 code 以控件为准，
+     * 文本只补控件没有的；被控件覆盖的文本信号进 conflicts，不静默丢弃。
+     * 忌口守卫：偏好名落在忌口别名里（辣/牛肉/鸡肉…）就交给忌口逻辑，不重复记。
+     * 放在拆开解析之前：parseItemPrefs 内部会先把拆开句式挖掉，两边不重复消费。 */
+    if (dishes && dishes.length) {
+      var textPrefs = (E.parseItemPrefs && E.parseItemPrefs(t, dishes)) || [];
+      var panelPrefs = (ctrl && ctrl.itemPrefs) || [];
+      var mergedPrefs = panelPrefs.map(function (pp) {
+        return {
+          name: pp.name, mention: pp.mention || pp.name, code: pp.code || null,
+          pref: pp.pref === 'avoid' ? 'avoid' : 'want', source: 'panel'
+        };
+      });
+      textPrefs.forEach(function (tp) {
+        var dup = mergedPrefs.some(function (mp) {
+          if (mp.code && tp.code && mp.code === tp.code) return true;
+          return mp.name === tp.name;
+        });
+        if (dup) {
+          // 面板与文本各说各话：按面板走，但必须告诉用户发生了什么
+          var panelOne = mergedPrefs.filter(function (mp) {
+            return (mp.code && tp.code && mp.code === tp.code) || mp.name === tp.name;
+          })[0];
+          q.conflicts.push({
+            field: 'itemPrefs', text: tp.mention, control: panelOne.mention,
+            resolved: panelOne.pref === 'avoid' ? '不想要' : '想要',
+            note: '输入框说「' + (tp.pref === 'avoid' ? '不要' : '想要') + tp.mention +
+              '」，勾选面板标的是「' + (panelOne.pref === 'avoid' ? '不想要' : '想要') +
+              panelOne.mention + '」，已按面板计算'
+          });
+          return;
+        }
+        mergedPrefs.push(tp);
+      });
+      mergedPrefs = mergedPrefs.filter(function (pp) {
+        var isAvoidWord = !!AVOID_ALIAS[pp.name] || Object.keys(AVOID_ALIAS).some(function (k) {
+          return AVOID_ALIAS[k].indexOf(pp.name) >= 0;
+        });
+        return !isAvoidWord;   // 忌口别名交给忌口逻辑，安全优先
+      });
+      q.itemPrefs = mergedPrefs;
+      if (mergedPrefs.length) {
+        q.sources.itemPrefs = panelPrefs.length ? 'merged' : 'text';
+      }
+    }
+
     /* ---- 套餐拆开：只要其中几样 / 整份拆成单点 ----
      * 「麦辣鸡腿堡套餐只要汉堡和薯条」「把双人餐拆开单点」→
      * 点名的子项按单点计入（wanted + fromCombo 标记），原套餐整体排除，
@@ -383,7 +438,12 @@
       dining: q.dining,
       orderMode: q.orderMode,
       modes: { singlesOnly: q.modes.singlesOnly, lateNight: q.modes.lateNight },
-      exclude: q.exclude.slice()
+      exclude: q.exclude.slice(),
+      // 子项偏好快照：UI 勾选面板据此回填（用户能看到「系统理解成了什么」）
+      itemPrefs: q.itemPrefs.map(function (pp) {
+        return { name: pp.name, mention: pp.mention, code: pp.code, pref: pp.pref, source: pp.source };
+      }),
+      weights: q.weights
     };
     return q;
   }
@@ -526,6 +586,14 @@
         parts: (d.parts || []).map(function (x) { return { code: x.code, name: x.name, qty: x.qty }; }),
         availability: d.ok === true ? 'ok' : 'soldout',
         nutrition: nutritionOfDish(d),
+        // 混合方案角标：'combo' 完整套餐 · 'single' 单独点 · 'comboPart' 套餐子项转单点
+        // （官方无套餐改配，comboPart 是按子项单点价另买的，不是改过的套餐）
+        // 口径与引擎一致：品名带 套餐/组合/桶/分享餐/件套 的也算套餐——官方分类
+        // 把一部分三件套归在了「主食」里，role 不是 combo，但用户眼里就是套餐
+        sourceType: it.src === 'comboPart' ? 'comboPart'
+          : ((E.isComboLike && E.isComboLike(d)) || d.role === 'combo' ||
+             /(套餐|组合|桶|分享餐|件套)/.test(d.name || '') ? 'combo' : 'single'),
+        fromCombo: it.fromCombo || null,
         // 套餐 vs 散件：按官方子项单点价重算的对比（问题四）。非套餐或子项无价为 null
         combo: E.comboBreakdown ? E.comboBreakdown(d, byCode) : null
       };
@@ -691,6 +759,8 @@
           return { name: n, fromCombo: (q.wantedMeta[n] || {}).fromCombo || null };
         }),
         exclude: q.exclude || [],
+        itemPrefs: q.itemPrefs || [],
+        weights: q.weights || null,
         singlesOnly: q.modes.singlesOnly,
         lateNight: q.modes.lateNight
       });
@@ -712,6 +782,8 @@
         out[0].dining = q.dining;
         out[0].orderMode = q.orderMode;
         out[0].modes = q.modes;
+        out[0].itemPrefs = q.itemPrefs || [];
+        out[0].weights = res.weights || q.weights || null;
       }
       return p(out);
     }
@@ -825,6 +897,13 @@
 
         // 套餐 vs 散件对比（问题四）
         comboSummary: comboSummary,
+        // 混合方案（套餐拆开的正确含义）：mixSummary 人话总结 + tradeoffExplanation
+        // 权衡解释 + comboCompare 四维对比。无子项偏好时引擎不产这三个字段 → null，
+        // UI 看到 null 就不渲染对比卡，不给普通方案硬编对比。
+        mixSummary: raw.mixSummary || null,
+        tradeoffExplanation: raw.tradeoffExplanation || null,
+        comboCompare: raw.comboCompare || null,
+        weights: raw.weights || null,
         // 点名菜落实报告（问题五配套）：点了什么、哪几版塞进去了、谁被挡住了
         wantedInfo: {
           requested: (wantedReport || []).map(function (w) { return w.name; }),
