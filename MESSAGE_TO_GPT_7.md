@@ -1,9 +1,19 @@
 # MESSAGE_TO_GPT_7：拆单 2.0 交接（各自点/一人代点 · 堂食外送 · 券账本 · 特色模式）
 
-> 代码先 pull（最新提交见 git log 顶部）。这是第七份增量交接，只列**变更**，`FOR_GPT.md` 的接口主体继续有效。
+> 代码先 pull（最新提交 `bc86084`，已推 GitHub：redbbit/mcdonald-ordering-assistant）。这是第七份增量交接，只列**变更**，`FOR_GPT.md` 的接口主体继续有效。
 >
 > **本轮落地用户六项需求里的引擎/服务/在线链路部分**：① 堂食/外送可选项 ② 单点 vs 套餐判断多元化 ③ 多人拆单 + 券账本统计 ④ 各自点 vs 一人代点双模式 ⑤ 两个特色模式（单点畅吃 / 宵夜）⑥ 分工纪律不变。
 > **前端三件套这次又是我直接接线的**（老规矩：我改完你 review，样式你主场）。改动集中在 app.js `renderAssignResult` 重写 + index.html 两个下拉 + style.css 一块新区。
+
+**本消息附件清单**（`mcd-advisor-delta3.zip`，全是本轮改动文件）：
+
+| 文件 | 为什么发 |
+|---|---|
+| `app.js` / `index.html` / `style.css` | **你主场，重点 review**（第三节有改动清单） |
+| `service.js` / `engine.js` | 契约实现，字段名以这两份为准 |
+| `server.py` / `lib/data_adapter.js` | 在线链路变更（beCode / orderType / store-coupons），第二节 2.5 节 |
+| `SCREENPLAY.md` | 录屏分镜，第 4 段已按拆单 2.0 重写 |
+| `tools/test_assign_ui.js` | 新增渲染回归测试（13 项），你改 app.js 后跑它 |
 
 ---
 
@@ -139,9 +149,12 @@ ledger.notes = [ … ]   // 三条恒显诚实边界 + dining 相关 + 剔除券
 - **你的领地**（app.js / index.html / style.css）：按前几轮先例「我接线、你 review」——本轮三处改动全部列在第三节，**特别是 `renderAssignResult` 重写和 `.assign-ledger` 样式**。功能取向（账本四列、状态色、人均卡文案）可以按你的设计判断调整，但**数据字段名和服务契约别动**，那边有 461 项断言盯着。
 - 未做的：官方 `query-store-coupons` 前端接入（涉及网络态降级 UI，属于你的判断范畴，要做先跟我说，我把 adapter 侧 `getStoreCoupons` 的调用示例补给你）。
 
-## 七、待办
+## 七、待办（按优先级，你这边只有这三件）
 
-1. **录屏**（60–90 秒，SCREENPLAY.md）——展示占 20%，唯一没动手的硬指标。本轮新功能建议给镜头的：拆单对比（split vs together 两个模式各跑一次）、券账本翻到底部的诚实边界 notes、堂食/外送切换后 verdict 变化。
-2. 你 review 第三节三处前端改动。
+| # | 事项 | 类型 | 说明 |
+|---|---|---|---|
+| 1 | **录屏** | 🔴 阻塞 | 60–90 秒，分镜在 `SCREENPLAY.md`（已按拆单 2.0 重写，第 4 段是主战场）。展示占 20%，今天 16:00 截止，唯一没动手的硬指标 |
+| 2 | **review 前端三件套** | 🟡 重要 | 第三节三处改动：index.html 两个下拉 / app.js `renderAssignResult` 重写 / style.css `.assign-ledger`。改完跑 `node tools/test_assign_ui.js`（13 项）防渲染回归 |
+| 3 | （可选）官方 `query-store-coupons` 前端接入 | 🟢 增强 | 后端已备好（第二节 2.5 节），涉网络态降级 UI，你判断。要做先跟我说，补 `getStoreCoupons` 调用示例 |
 
-EVIDENCE.md 明早 08:00 自动刷新（build_evidence.py，不碰菜单数据），pull 即新。
+EVIDENCE.md 今早 08:00 自动刷新（build_evidence.py，不碰菜单数据），pull 即新。提交已全部推送 GitHub（`bc86084`），`git pull` 即可。
