@@ -2,10 +2,10 @@
   'use strict';
 
   var S;
-  var state = { meta: null, showcase: [], campaigns: [], coupons: [], activeCoupon: null, plans: [], selected: new Set(), slide: 0, campaignSlide: 0, toastTimer: 0, rotationTimer: 0, campaignTimer: 0 };
+  var state = { meta: null, showcase: [], campaigns: [], coupons: [], activeCoupon: null, plans: [], selected: new Set(), slots: [], activeSlot: '', lastQuery: null, slotRevision: 0, slide: 0, campaignSlide: 0, toastTimer: 0, rotationTimer: 0, campaignTimer: 0 };
   var $ = function (id) { return document.getElementById(id); };
   var els = {
-    metaLine: $('metaLine'), conversation: $('conversation'), request: $('requestText'), charCount: $('charCount'), form: $('advisorForm'), submit: $('submitButton'),
+    metaLine: $('metaLine'), slotSelector: $('slotSelector'), conversation: $('conversation'), request: $('requestText'), charCount: $('charCount'), form: $('advisorForm'), submit: $('submitButton'),
     people: $('people'), budgetMin: $('budgetMin'), budgetMax: $('budgetMax'), unlimited: $('unlimited'), goal: $('goal'), avoid: $('avoidOptions'), goals: $('goalChips'),
     results: $('resultsSection'), planGrid: $('planGrid'), notices: $('noticeStack'), error: $('errorBanner'), selectionBar: $('selectionBar'), selectedCount: $('selectedCount'),
     summaryOutput: $('summaryOutput'), summaryText: $('summaryText'), showcaseImage: $('showcaseImage'), heroName: $('heroName'), heroCategory: $('heroCategory'), heroPrice: $('heroPrice'),
@@ -30,6 +30,30 @@
     var date = new Date(String(raw).replace(' ', 'T'));
     if (isNaN(date.getTime())) return String(raw);
     return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
+  }
+  function slotDisplayLabel(slot) {
+    if (slot.label && slot.label !== '当前时段') return slot.label;
+    var stamp = new Date(String(slot.fetchedAt || '').replace(' ', 'T'));
+    if (!isNaN(stamp.getTime())) {
+      var minute = stamp.getHours() * 60 + stamp.getMinutes();
+      for (var i = 0; i < (slot.timeRanges || []).length; i++) {
+        var range = slot.timeRanges[i].range || '';
+        var match = /(\d{1,2}):(\d{2})至(\d{1,2}):(\d{2})/.exec(range);
+        if (!match) continue;
+        var start = Number(match[1]) * 60 + Number(match[2]);
+        var end = Number(match[3]) * 60 + Number(match[4]);
+        if (start <= end ? minute >= start && minute <= end : minute >= start || minute <= end) return slot.timeRanges[i].name;
+      }
+    }
+    return slot.key || '当前菜单';
+  }
+  function renderSlotSelector() {
+    els.slotSelector.innerHTML = state.slots.map(function (slot) {
+      var label = slotDisplayLabel(slot);
+      return '<option value="' + attr(slot.key || '') + '" ' + ((slot.key || '') === state.activeSlot ? 'selected' : '') + '>' + esc(label) + ' · ' + esc(fmtDateTime(slot.fetchedAt)) + '</option>';
+    }).join('');
+    els.slotSelector.disabled = state.slots.length < 2;
+    els.slotSelector.setAttribute('aria-label', '切换菜单时段');
   }
   function imageMarkup(item, className, alt, loading) {
     item = item || {};
@@ -150,11 +174,12 @@
     els.metaLine.innerHTML = '<span class="meta-dot"></span><span>数据更新于 ' + esc(fmtDateTime(state.meta.fetchedAt)) + ' · ' + esc(slotText) + ' · ' + esc(store.distance == null ? '' : store.distance + 'm') + '</span>';
     els.metaLine.title = (store.name || '') + (store.address ? ' · ' + store.address : '');
   }
-  function renderAvoidOptions(options) {
+  function renderAvoidOptions(options, selectedValues) {
+    selectedValues = selectedValues || [];
     if (!options.length) { els.avoid.innerHTML = '<span class="soft-placeholder">无忌口选项</span>'; return; }
     els.avoid.innerHTML = options.map(function (option) {
       var id = 'avoid-' + option.value.replace(/[^\w\u4e00-\u9fa5]/g, '');
-      return '<label class="avoid-tag"><input type="checkbox" value="' + attr(option.value) + '" id="' + attr(id) + '"><span>' + esc(option.value) + '</span></label>';
+      return '<label class="avoid-tag"><input type="checkbox" value="' + attr(option.value) + '" id="' + attr(id) + '" ' + (selectedValues.indexOf(option.value) >= 0 ? 'checked' : '') + '><span>' + esc(option.value) + '</span></label>';
     }).join('');
   }
   function renderGoalOptions(options) {
@@ -288,6 +313,27 @@
     els.submit.querySelector('.button-label').textContent = busy ? '正在按菜单搭配…' : '给我搭三份';
     els.error.hidden = true;
   }
+  async function runRecommendation(query, options) {
+    options = options || {};
+    var revision = state.slotRevision;
+    setBusy(true);
+    try {
+      var plans = await S.recommendPlans(query);
+      if (revision !== state.slotRevision) return;
+      renderPlans(plans);
+      if (options.announce) appendMessage('assistant', options.announce);
+      if (options.scroll) els.results.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      try { localStorage.setItem('mcadvisor-preferences', JSON.stringify(query)); } catch (ignore) { /* 本机存储不可用时仍正常配餐 */ }
+      return plans;
+    } catch (error) {
+      if (revision !== state.slotRevision) return;
+      els.error.textContent = error && error.message ? error.message : '这次没有找到合适的组合，请稍微调整预算或忌口再试一次。';
+      els.error.hidden = false;
+      if (options.announceError) appendMessage('assistant', '这组条件暂时没有合适组合。可以放宽预算或减少忌口，再试一次。');
+    } finally {
+      if (revision === state.slotRevision) setBusy(false);
+    }
+  }
   async function submitRequest(event) {
     event.preventDefault();
     var text = els.request.value.trim();
@@ -297,19 +343,13 @@
       return;
     }
     var query = mergeQuery();
-    setBusy(true);
+    state.lastQuery = query;
     appendMessage('user', text || [query.people + ' 人', query.unlimited ? '预算不限' : '预算 ' + query.budgetMin + ' 至 ' + query.budgetMax + ' 元', query.goal].filter(Boolean).join(' · '));
-    try {
-      var plans = await S.recommendPlans(query);
-      renderPlans(plans);
-      appendMessage('assistant', '我按你的条件搭好了三份：省钱聚餐、低卡高蛋白和新品尝鲜。每份都可以展开看热量与官方营养信息。');
-      els.results.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      try { localStorage.setItem('mcadvisor-preferences', JSON.stringify(query)); } catch (ignore) { /* 本机存储不可用时仍正常配餐 */ }
-    } catch (error) {
-      els.error.textContent = error && error.message ? error.message : '这次没有找到合适的组合，请稍微调整预算或忌口再试一次。';
-      els.error.hidden = false;
-      appendMessage('assistant', '这组条件暂时没有合适组合。可以放宽预算或减少忌口，再试一次。');
-    } finally { setBusy(false); }
+    await runRecommendation(query, {
+      announce: '我按你的条件搭好了三份：省钱聚餐、低卡高蛋白和新品尝鲜。每份都可以展开看热量与官方营养信息。',
+      announceError: true,
+      scroll: true
+    });
   }
 
   async function toggleDetail(card, kind, button) {
@@ -327,13 +367,16 @@
   async function selectedAction(mode) {
     var plans = selectedPlanObjects();
     if (!plans.length) return;
+    var service = S;
+    var revision = state.slotRevision;
     els.summaryOutput.hidden = false;
     els.summaryText.textContent = '正在生成…';
     var results = [];
     try {
       for (var i = 0; i < plans.length; i++) {
-        if (mode === 'calculate') results.push(await S.calculatePlan(plans[i].planId));
-        else results.push(await S.buildOrderSummary(plans[i].planId));
+        if (mode === 'calculate') results.push(await service.calculatePlan(plans[i].planId));
+        else results.push(await service.buildOrderSummary(plans[i].planId));
+        if (revision !== state.slotRevision) return;
       }
       if (mode === 'summary') {
         els.summaryText.textContent = results.join('\n\n────────────────────────\n\n') + couponSummaryNote();
@@ -346,6 +389,7 @@
       }
       els.summaryOutput.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     } catch (error) {
+      if (revision !== state.slotRevision) return;
       els.summaryText.textContent = error && error.message ? error.message : '暂时无法生成清单，请重试。';
     }
   }
@@ -390,6 +434,65 @@
     }, 7200);
   }
 
+  async function readServiceSnapshot() {
+    var loaded = await Promise.all([S.getMeta(), S.getShowcase(12), S.getCampaigns(), S.getAvoidOptions(), S.getGoalOptions()]);
+    state.meta = loaded[0];
+    state.showcase = loaded[1] || [];
+    var bundle = loaded[2] || {};
+    state.coupons = bundle.coupons || [];
+    state.campaigns = (bundle.today && bundle.today.length ? bundle.today : bundle.upcoming) || [];
+    renderMeta(); renderShowcase(); renderCampaigns(); renderCoupons();
+    renderAvoidOptions(loaded[3] || [], state.lastQuery ? state.lastQuery.avoid : []);
+    renderGoalOptions(loaded[4] || []);
+    $('campaignSource').textContent = bundle.campaignCalendarLinked ? '官方活动日历 · 麦当劳 MCP' : '官方菜单标签 · 麦当劳 MCP';
+  }
+
+  async function switchSlot(key) {
+    key = key || '';
+    if (key === state.activeSlot) return;
+    var slot = state.slots.filter(function (item) { return (item.key || '') === key; })[0];
+    if (!slot || !slot.available) { renderSlotSelector(); return; }
+    var label = slotDisplayLabel(slot);
+    var revision = ++state.slotRevision;
+    var hadQuery = !!state.lastQuery;
+    state.activeSlot = key;
+    state.selected.clear();
+    state.plans = [];
+    state.activeCoupon = null;
+    els.planGrid.innerHTML = '';
+    els.notices.innerHTML = '';
+    els.selectionBar.hidden = true;
+    els.summaryOutput.hidden = true;
+    els.results.hidden = !hadQuery;
+    if (hadQuery) els.notices.innerHTML = '<div class="notice">正在切换到' + esc(label) + '菜单，并按你刚才的需求重新搭配…</div>';
+    els.error.hidden = true;
+    renderSlotSelector();
+    els.slotSelector.disabled = true;
+    if (hadQuery) setBusy(true);
+    try {
+      S = McAdvisor.createService(key ? { slot: key } : {});
+      await readServiceSnapshot();
+      if (revision !== state.slotRevision) return;
+      if (hadQuery) {
+        await runRecommendation(state.lastQuery, {
+          announce: '已切换到' + label + '时段，我按当前菜单和你刚才的条件重新搭好了。旧方案的选择已清除。',
+          scroll: false
+        });
+        showToast('已切换到' + label + '，方案已按当前条件重新搭配');
+      } else {
+        setBusy(false);
+        showToast('已切换到' + label + '菜单');
+      }
+    } catch (error) {
+      if (revision !== state.slotRevision) return;
+      els.error.textContent = '切换菜单时段失败：' + (error && error.message ? error.message : '请重试');
+      els.error.hidden = false;
+      setBusy(false);
+    } finally {
+      if (revision === state.slotRevision) els.slotSelector.disabled = state.slots.length < 2;
+    }
+  }
+
   function bindEvents() {
     els.form.addEventListener('submit', submitRequest);
     els.request.addEventListener('input', function () { els.charCount.textContent = els.request.value.length + ' / 500'; });
@@ -407,6 +510,7 @@
     els.unlimited.addEventListener('change', function () {
       if (els.unlimited.checked) { els.budgetMin.value = ''; els.budgetMax.value = ''; }
     });
+    els.slotSelector.addEventListener('change', function () { switchSlot(els.slotSelector.value); });
     document.querySelectorAll('.suggestion-chip').forEach(function (button) {
       button.addEventListener('click', function () { els.request.value = button.dataset.prompt || ''; els.charCount.textContent = els.request.value.length + ' / 500'; els.request.focus(); });
     });
@@ -471,18 +575,15 @@
   async function boot() {
     bindEvents();
     try {
-      S = McAdvisor.getService();
-      var loaded = await Promise.all([S.getMeta(), S.getShowcase(12), S.getCampaigns(), S.getAvoidOptions(), S.getGoalOptions()]);
-      state.meta = loaded[0]; state.showcase = loaded[1] || [];
-      var bundle = loaded[2] || {};
-      state.coupons = bundle.coupons || [];
-      state.campaigns = (bundle.today && bundle.today.length ? bundle.today : bundle.upcoming) || [];
-      renderMeta(); renderShowcase(); renderCampaigns(); renderCoupons(); renderAvoidOptions(loaded[3] || []); renderGoalOptions(loaded[4] || []);
-      $('campaignSource').textContent = bundle.campaignCalendarLinked ? '官方活动日历 · 麦当劳 MCP' : '官方菜单标签 · 麦当劳 MCP';
+      state.slots = McAdvisor.listSlots().filter(function (slot) { return slot.available; });
+      state.activeSlot = state.slots.length ? (state.slots[0].key || '') : '';
+      renderSlotSelector();
+      S = McAdvisor.createService(state.activeSlot ? { slot: state.activeSlot } : {});
+      await readServiceSnapshot();
       initRotation();
     } catch (error) {
       els.metaLine.innerHTML = '<span class="meta-dot meta-dot-error"></span><span>本地菜单快照未能载入</span>';
-      els.error.textContent = '菜单服务未能初始化，请确认当前目录中的 data/menu_data.js、data/campaigns.js、engine.js 与 service.js 完整。' + (error && error.message ? ' (' + error.message + ')' : '');
+      els.error.textContent = '菜单服务未能初始化，请确认当前目录中的 data/menu_data.js、data/menu_data_night.js、data/campaigns.js、engine.js 与 service.js 完整。' + (error && error.message ? ' (' + error.message + ')' : '');
       els.error.hidden = false;
     }
   }

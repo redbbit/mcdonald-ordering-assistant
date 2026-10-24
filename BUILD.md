@@ -9,6 +9,8 @@
 
 ```bash
 node tools/test_service.js        # 数据与算法自检：309 项断言
+node tools/test_engine.js         # 推荐引擎边界：¥15 极端预算下的降级会标 ⚠️ 已知边界
+node tools/test_slots.js          # 多时段：证明三段快照是真独立数据，不是换标签
 node tools/check_release.js       # 发布前安检：Token / 离线 / 图片
 python tools/build_data.py        # 可选：重新向麦当劳 MCP 拉一次真实数据
 python tools/build_campaigns.py   # 可选：单独刷新官方活动日历
@@ -58,7 +60,7 @@ python tools/build_campaigns.py   # 可选：单独刷新官方活动日历
   default-src 'self' data: blob:;
   script-src 'self' 'unsafe-inline';
   style-src 'self' 'unsafe-inline';
-  img-src 'self' data: blob: https://*.mcd.cn https://*.myqcloud.com;
+  img-src 'self' data: blob:;
   connect-src 'none';
   font-src 'self' data:;
   base-uri 'none'; form-action 'none'

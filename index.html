@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f4efe5">
   <meta name="description" content="按人数、预算与口味，搭配三份麦当劳个性化套餐。商品与活动数据来自麦当劳官方 MCP 快照。">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; font-src 'self' data:; base-uri 'none'; form-action 'none'">
   <title>麦麦搭配所 · 今天吃点好的</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -15,7 +16,10 @@
         <span class="brand-mark" aria-hidden="true"><span></span><span></span></span>
         <span><strong>麦麦搭配所</strong><small>McDonald’s meal studio</small></span>
       </a>
-      <div class="top-meta" id="metaLine" aria-live="polite"><span class="meta-dot"></span><span>正在读取门店快照…</span></div>
+      <div class="topbar-tools">
+        <div class="top-meta" id="metaLine" aria-live="polite"><span class="meta-dot"></span><span>正在读取门店快照…</span></div>
+        <label class="slot-switch"><span>菜单时段</span><select id="slotSelector" aria-label="切换菜单时段" disabled><option>读取快照…</option></select></label>
+      </div>
     </header>
 
     <main class="main-layout" id="top">
@@ -134,6 +138,7 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <script src="data/menu_data.js"></script>
+  <script src="data/menu_data_night.js"></script>
   <script src="data/campaigns.js"></script>
   <script src="engine.js"></script>
   <script src="service.js"></script>

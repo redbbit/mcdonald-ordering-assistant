@@ -181,11 +181,21 @@ for (const f of scanFiles) {
   for (const m of s.matchAll(/(?:^|["'(=])(img\/[A-Za-z0-9_.\-]+)/g)) localRefs.add(m[1]);
 }
 
+// 白名单域名允许以 CSP 通配形式出现（如 *.mcd.cn），但 *.com 这种过宽的一律拒绝
+function hostAllowed(host) {
+  if (IMG_HOSTS.includes(host)) return true;
+  if (!/^\*\./.test(host)) return false;
+  const labels = host.slice(2).split('.');
+  if (labels.length < 2) return false;
+  const suffix = host.slice(1);
+  return IMG_HOSTS.some(h => h.endsWith(suffix));
+}
+
 let badHost = 0, nsSeen = 0;
 for (const [u, f] of allUrls) {
   let host = '';
   try { host = new URL(u).hostname; } catch (e) { continue; }
-  if (IMG_HOSTS.includes(host)) continue;
+  if (hostAllowed(host)) continue;
   if (NS_HOSTS.includes(host)) {
     // 命名空间必须真的是 xmlns，不能是被拿来当资源地址用
     const s = read(f) || '';

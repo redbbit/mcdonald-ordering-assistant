@@ -405,11 +405,24 @@ function makePlans(opt) {
   var chosen = new Array(3);
   var used = {};
   if (out[1] && out[1].length) { chosen[1] = out[1][0]; used[chosen[1].sig_] = 1; }
-  chosen[0] = out[0] && out[0].length ? pickBest(out[0], used) : null;
+  chosen[0] = out[0] && out[0].length ? (pickCheapest(out[0], used, 0.10) || pickBest(out[0], used)) : null;
   if (chosen[0]) used[chosen[0].sig_] = 1;
   chosen[2] = out[2] && out[2].length ? pickBest(out[2], used) : null;
 
   // 三档只需互不相同；语义不同，不再强制价格单调
+  // ——但 A 必须对得起「省钱」这个名字：同组高分候选里取最便宜的，
+  //   否则会当场出现「省钱版 ¥28、低卡版 ¥24」这种一眼穿帮的组合。
+  function pickCheapest(list, avoidSig, tol) {
+    var pool = list.filter(function (p) { return !avoidSig[p.sig_]; });
+    if (!pool.length) return null;
+    var top = pool[0].score;
+    var keep = pool.filter(function (p) { return p.score >= top - Math.abs(top) * tol; });
+    if (!keep.length) keep = pool;
+    var best = keep[0];
+    keep.forEach(function (p) { if (p.total < best.total - 1e-6) best = p; });
+    return best;
+  }
+
   var plans = [];
   MODES.forEach(function (M, i) {
     var p = chosen[i] || (out[i] && out[i][0]);

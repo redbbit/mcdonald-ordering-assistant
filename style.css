@@ -21,6 +21,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .brand strong { font-size: 16px; letter-spacing: .08em; display: block; }
 .brand small { display: block; margin-top: 2px; color: #9a8a76; font-size: 9px; letter-spacing: .14em; text-transform: uppercase; }
 .top-meta { display: flex; align-items: center; gap: 9px; color: #776956; font-size: 12px; }
+.topbar-tools { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 14px; }
+.slot-switch { min-height: 44px; display: inline-flex; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid #e5d6bd; border-radius: 8px; background: #fffaf0; color: #796344; white-space: nowrap; }
+.slot-switch > span { color: #9a896f; font-size: 9px; }
+.slot-switch select { max-width: 180px; min-height: 44px; border: 0; outline: 0; background: transparent; color: #5b4227; cursor: pointer; font-size: 11px; }
+.slot-switch select:disabled { cursor: default; }
 .meta-dot, .assistant-status i, .rotate-note i, .showcase-topline i { width: 7px; height: 7px; display: inline-block; background: #55a56a; border-radius: 50%; box-shadow: 0 0 0 3px rgba(85,165,106,.14); }
 .meta-dot-error { background: var(--red); box-shadow: 0 0 0 3px rgba(201,37,25,.14); }
 .coupon-trigger { position: fixed; z-index: 12; left: calc((100vw - min(100vw, 1920px)) / 2 + min(76px, 4.2vw) + 8px); bottom: 72px; min-height: 50px; border: 1px solid #e7d5b7; background: #fff8e7; border-radius: 999px; padding: 0 15px; display: inline-flex; align-items: center; gap: 9px; color: #674927; cursor: pointer; font-size: 12px; box-shadow: 0 8px 25px rgba(61,40,21,.18); transition: .2s ease; }
@@ -295,6 +300,10 @@ input[type="number"], input[type="text"] { min-height: 44px; }
 @media (max-width: 600px) {
   .app-shell { padding: 0 14px; }
   .topbar { min-height: 64px; gap: 8px; }
+  .topbar-tools { gap: 0; }
+  .slot-switch { gap: 4px; padding: 0 7px; }
+  .slot-switch > span { display: none; }
+  .slot-switch select { max-width: 132px; font-size: 10px; }
   .brand-mark { width: 31px; height: 34px; }
   .brand strong { font-size: 14px; }
   .coupon-trigger { min-height: 40px; gap: 6px; padding: 0 10px; font-size: 10px; }
