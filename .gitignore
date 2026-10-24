@@ -1,0 +1,16 @@
+# 凭据：任何时候都不许进仓库
+.env
+.env.*
+*.token
+credentials.json
+mcp.json
+
+# 构建过程产物
+tools/__pycache__/
+__pycache__/
+*.pyc
+
+# 本地演示无关文件
+*.log
+Thumbs.db
+.DS_Store
