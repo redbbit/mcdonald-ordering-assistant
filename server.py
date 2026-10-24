@@ -42,7 +42,8 @@ except ImportError:
 
 # ------------------------------------------------------------ 常量
 
-DEFAULT_PORT = 8787
+# 端口按前端同学的建议定死，避免两边记不一致
+DEFAULT_PORT = 4317
 STORE_CODE_DEFAULT = "1400028"          # 麦当劳广州新港西路餐厅
 
 # 图片代理白名单：只放行麦当劳官方 CDN，绝不做开放代理
@@ -241,7 +242,11 @@ def parse_calc_price(result):
 # ------------------------------------------------------------ 业务处理
 
 def handle_health(query):
-    """探针：前端靠它决定进在线还是离线。不能因为任何原因返回 5xx 以外的假成功。"""
+    """
+    探针：前端靠它决定进在线还是离线。
+    字段按前端同学的要求给全：ok / mode / requestId / checkedAt / fetchedAt。
+    **绝不返回 MCP Token**，这个路由任何情况下都不带凭据。
+    """
     status = {"reachable": False, "latencyMs": None, "error": None}
     t0 = time.time()
     try:
@@ -255,13 +260,15 @@ def handle_health(query):
     status["latencyMs"] = round((time.time() - t0) * 1000)
 
     return {
+        "ok": True,
         "mode": "online" if status["reachable"] else "unreachable",
         "mcp": status,
+        "checkedAt": now_iso(),
         "storeCode": STORE_CODE_DEFAULT,
         "tools": ["query-nearby-stores", "query-meals", "list-nutrition-foods",
                   "available-coupons", "campaign-calendar", "query-meal-detail",
                   "calculate-price"],
-        "note": "本服务不代理 create-order",
+        "note": "本服务不代理 create-order，也不会返回任何凭据",
     }
 
 
@@ -451,7 +458,36 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(envelope(path, ok=True, data=data,
                                  elapsedMs=round((time.time() - t0) * 1000)))
 
+    def _serve_static(self, urlpath):
+        """
+        顺带托管网页本身。这样访问 http://127.0.0.1:<port>/ 是同源页面，
+        既没有跨域问题，CSP 用 'self' 就够了——比 file:// 下开 CORS 干净得多。
+        """
+        rel = urllib.parse.unquote(urlpath).lstrip("/")
+        if rel in ("", "/"):
+            rel = "index.html"
+
+        target = os.path.normpath(os.path.join(ROOT, rel))
+        # 目录穿越防护：规范化后必须仍在项目目录内
+        if not target.startswith(os.path.normpath(ROOT) + os.sep) and target != ROOT:
+            return self._send_json(envelope(urlpath, ok=False,
+                                            error={"code": "forbidden", "message": "路径越界"}), 403)
+        if not os.path.isfile(target):
+            return self._send_json(envelope(urlpath, ok=False,
+                                            error={"code": "not_found", "message": rel}), 404)
+
+        ctype = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
+                 ".css": "text/css; charset=utf-8", ".json": "application/json; charset=utf-8",
+                 ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                 ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml"}.get(
+            os.path.splitext(target)[1].lower(), "application/octet-stream")
+        with open(target, "rb") as f:
+            self._send_bytes(f.read(), ctype)
+
     def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if not parsed.path.startswith("/api/"):
+            return self._serve_static(parsed.path)
         self._dispatch("GET")
 
     def do_POST(self):
@@ -488,7 +524,9 @@ def main():
         print(f"  ⚠️ MCP 握手失败：{e}\n     服务仍会启动，health 会返回 unreachable，前端将自动降级为离线模式")
 
     print(f"  本地后端已启动 → http://{args.host}:{args.port}")
-    print("  路由：" + "  ".join(sorted(ROUTES)))
+    print(f"  在线模式：浏览器打开 http://{args.host}:{args.port}/ （同源，无跨域问题）")
+    print("  离线模式：直接双击 index.html（file:// 下不探测服务，自动用快照）")
+    print("  接口：" + "  ".join(sorted(ROUTES)))
     print("  按 Ctrl+C 停止\n")
     try:
         ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
