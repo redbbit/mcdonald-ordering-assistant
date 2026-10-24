@@ -13,7 +13,7 @@ const root = path.join(__dirname, '..');
 const sandbox = { console, setTimeout, clearTimeout, Date, Math, JSON, Set, Map, Array, Object, String, Number, RegExp };
 sandbox.globalThis = sandbox; sandbox.window = sandbox;
 vm.createContext(sandbox);
-const LOAD = ['data/menu_data.js', 'data/menu_data_night.js', 'data/campaigns.js', 'engine.js', 'service.js'];
+const LOAD = ['data/menu_data.js', 'data/menu_data_night.js', 'data/menu_data_latenight.js', 'data/campaigns.js', 'engine.js', 'service.js'];
 LOAD.forEach(f => vm.runInContext(fs.readFileSync(path.join(root, f), 'utf8'), sandbox, { filename: f }));
 
 const A = sandbox.McAdvisor;
@@ -29,7 +29,7 @@ console.log('===================================================================
 
 const slots = A.listSlots();
 console.log('[1] listSlots()');
-check(slots.length >= 2, '至少能列出 2 个时段快照', '实际 ' + slots.length + ' 个');
+check(slots.length >= 3, '至少能列出 3 个时段快照（下午茶 / 夜市 / 宵夜）', '实际 ' + slots.length + ' 个');
 slots.forEach(s => console.log(`     ${s.key.padEnd(10)} ${String(s.label).padEnd(6)} available=${s.available} 抓取于 ${s.fetchedAt}`));
 check(slots.every(s => s.available), '所有列出的时段都可用');
 check(new Set(slots.map(s => s.key)).size === slots.length, '时段 key 不重复');
