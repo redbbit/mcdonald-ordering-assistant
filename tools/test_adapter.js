@@ -23,7 +23,7 @@ function check(cond, label, extra) {
 const sandbox = { console, setTimeout, clearTimeout, Date, Math, JSON, Set, Map, Array, Object, String, Number, RegExp, Promise, fetch };
 sandbox.globalThis = sandbox; sandbox.window = sandbox;
 vm.createContext(sandbox);
-['data/menu_data.js', 'data/menu_data_night.js', 'data/campaigns.js'].forEach(f => {
+['data/menu_data.js', 'data/menu_data_night.js', 'data/campaigns.js', 'engine.js'].forEach(f => {
   if (fs.existsSync(path.join(root, f))) {
     vm.runInContext(fs.readFileSync(path.join(root, f), 'utf8'), sandbox, { filename: f });
   }
@@ -134,6 +134,74 @@ console.log('===================================================================
       const hit = probe.items.filter(i => i.state === 'soldout').length;
       check(hit > 0, '在线售罄探测能识别真实 60006', 'soldout ' + hit + ' 个');
     }
+  }
+
+  /* ---------------------------------------------------- ⑤ 分账 */
+  console.log('\n[5] 分账 · 三种口径与最大余额法');
+  {
+    const eng = sandbox.MCDEngine;
+    check(!!eng && typeof eng.splitBill === 'function', '引擎提供 splitBill');
+    if (eng && eng.splitBill) {
+      // 100 元三人均分：33.33 × 3 = 99.99，差一分——最大余额法必须补平
+      const even = eng.splitBill(100, { mode: 'even', people: 3 });
+      const sum3 = even.shares.reduce((s, x) => s + x.amount, 0);
+      check(even.balanced === true, '均分：Σ各份 === 总额', `${sum3} vs 100`);
+      check(Math.abs(sum3 - 100) < 1e-9, '均分：没有差一分钱', 'Σ=' + sum3);
+
+      const w = eng.splitBill(100, { mode: 'byWeight',
+        members: [{ name: '甲', weight: 2 }, { name: '乙', weight: 1 }, { name: '丙', weight: 1 }] });
+      const sw = w.shares.reduce((s, x) => s + x.amount, 0);
+      check(w.balanced === true && Math.abs(sw - 100) < 1e-9, '权重分账：Σ === 总额', 'Σ=' + sw);
+      check(w.shares[0].amount > w.shares[1].amount, '权重分账：权重大的付得多',
+        `${w.shares[0].amount} > ${w.shares[1].amount}`);
+
+      const item = eng.splitBill(60, {
+        mode: 'byItem',
+        members: [{ name: '甲' }, { name: '乙' }],
+        items: [
+          { code: 'a', price: 30, qty: 1, owners: [0] },
+          { code: 'b', price: 30, qty: 1, owners: [1] }
+        ]
+      });
+      check(item.balanced === true, '按归属分账：Σ === 总额');
+      check(item.shares[0].amount === 30 && item.shares[1].amount === 30,
+        '按归属分账：各付各的', `${item.shares[0].amount} / ${item.shares[1].amount}`);
+
+      // 公共菜（无人认领）应当全员均摊
+      const shared = eng.splitBill(60, {
+        mode: 'byItem', members: [{ name: '甲' }, { name: '乙' }],
+        items: [{ code: 'share', price: 60, qty: 1 }]
+      });
+      check(shared.shares[0].amount === 30 && shared.shares[1].amount === 30,
+        '公共菜无人认领时均摊', `${shared.shares[0].amount} / ${shared.shares[1].amount}`);
+    }
+  }
+
+  console.log('\n[6] 服务层分账 · 必须带 simulated');
+  {
+    const sb2 = { console, setTimeout, clearTimeout, Date, Math, JSON, Set, Map, Array, Object, String, Number, RegExp, Promise };
+    sb2.globalThis = sb2; sb2.window = sb2;
+    vm.createContext(sb2);
+    ['data/menu_data.js', 'data/campaigns.js', 'engine.js', 'service.js'].forEach(f =>
+      vm.runInContext(fs.readFileSync(path.join(root, f), 'utf8'), sb2, { filename: f }));
+
+    const S = sb2.McAdvisor.createService();
+    const plans = await S.recommendPlans('3个人150以内');
+    check(plans.length === 3, '拿到三版方案');
+
+    const p0 = plans[0];
+    check(p0.mode === 'offline', '方案带 mode（离线）', 'mode=' + p0.mode);
+    check(p0.simulated === true, '离线方案 simulated 为 true');
+    check(!!p0.fetchedAt, '方案带 fetchedAt（快照时间）', String(p0.fetchedAt).slice(0, 16));
+
+    const bill = await S.splitBill(p0.planId, { mode: 'even' });
+    check(bill.simulated === true, '离线分账带 simulated（UI 必须显示黄色预演）');
+    check(bill.balanced === true, '服务层分账 Σ === 总额', 'Σ=' +
+      bill.shares.reduce((s, x) => s + x.amount, 0));
+    check(bill.shares.length === 3, '分账份数 = 人数', bill.shares.length + ' 份');
+    check(bill.splitMode === 'even' && bill.mode === 'offline',
+      'splitMode 与 mode 是两个不同维度', `${bill.splitMode} / ${bill.mode}`);
+    check(/预演/.test(bill.note), '离线分账文案含「预演」', bill.note);
   }
 
   console.log('\n==============================================================================');

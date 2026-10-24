@@ -471,10 +471,112 @@ function nutritionOf(plan) {
   return { total: t, rows: rows };
 }
 
+/* ------------------------------------------------ 分账
+   三种口径：
+     even    人均等分（最常用）
+     byItem  按归属：谁点了什么谁付，公共项再均分
+     byWeight 按权重（有人吃得多 / AA 但有人请客）
+
+   统一用「最大余额法」落到分：先按整数分分配，再把余下的分按小数部分
+   从大到小依次补给各份。这样保证 Σ各份 === 总额，绝不会出现差一分钱。
+*/
+function largestRemainder(weights, totalCents) {
+  var n = weights.length;
+  if (!n) return [];
+  var sum = 0;
+  weights.forEach(function (w) { sum += w; });
+  if (sum <= 0) {                                  // 全 0 权重退化成均分
+    weights = weights.map(function () { return 1; });
+    sum = n;
+  }
+
+  var base = [], rema = [];
+  for (var i = 0; i < n; i++) {
+    var exact = totalCents * weights[i] / sum;
+    var floor = Math.floor(exact);
+    base.push(floor);
+    rema.push({ i: i, r: exact - floor });
+  }
+  var left = totalCents - base.reduce(function (a, b) { return a + b; }, 0);
+  // 余数大的先补；完全相等时按原始顺序，保证结果稳定可复现
+  rema.sort(function (a, b) { return b.r - a.r || a.i - b.i; });
+  for (var k = 0; k < Math.min(left, n); k++) base[rema[k].i] += 1;
+  return base;
+}
+
+/**
+ * @param {number} total   总额（元）
+ * @param {object} opt
+ *   mode     'even' | 'byItem' | 'byWeight'
+ *   members  [{ name, weight?, code? }]
+ *   items    byItem 时需要：[{ code|name, price, qty, owners:[成员下标] }]
+ * @returns {{ mode, total, shares:[{name,amount,items}], method, balanced }}
+ */
+function splitBill(total, opt) {
+  opt = opt || {};
+  var mode = opt.mode || 'even';
+  var members = (opt.members || []).map(function (m) {
+    return typeof m === 'string' ? { name: m } : Object.assign({}, m);
+  });
+  var n = opt.people || members.length || 1;
+  if (!members.length) {
+    for (var i = 0; i < n; i++) members.push({ name: '第 ' + (i + 1) + ' 人' });
+  }
+
+  var totalCents = Math.round((parseFloat(total) || 0) * 100);
+  var weights, itemMap = null;
+
+  if (mode === 'byItem') {
+    // 归属口径：先把每笔钱摊到点了它的人头上，得到一个应付款额，再按这个额度配权
+    var raw = members.map(function () { return 0; });
+    var items = opt.items || [];
+    items.forEach(function (it) {
+      var cents = Math.round((parseFloat(it.price) || 0) * (parseInt(it.qty, 10) || 1) * 100);
+      var owners = (it.owners && it.owners.length) ? it.owners : null;
+      if (!owners) {                               // 没人认领 = 公共项，全员均摊
+        var each = cents / members.length;
+        for (var i = 0; i < members.length; i++) raw[i] += each;
+        return;
+      }
+      var per = cents / owners.length;
+      owners.forEach(function (oi) { if (raw[oi] != null) raw[oi] += per; });
+    });
+    if (!items.length) {                           // 没给明细就退化成均分
+      weights = members.map(function () { return 1; });
+    } else {
+      weights = raw;
+    }
+    itemMap = raw.map(function (c) { return Math.round(c) / 100; });
+  } else if (mode === 'byWeight') {
+    weights = members.map(function (m) { return parseFloat(m.weight) || 1; });
+  } else {
+    weights = members.map(function () { return 1; });
+  }
+
+  var cents = largestRemainder(weights, totalCents);
+  var shares = members.map(function (m, i) {
+    return {
+      name: m.name || ('第 ' + (i + 1) + ' 人'),
+      amount: Math.round(cents[i]) / 100,
+      items: itemMap ? itemMap[i] : null
+    };
+  });
+
+  var sum = shares.reduce(function (a, s) { return a + s.amount; }, 0);
+  return {
+    mode: mode,
+    total: Math.round(totalCents) / 100,
+    shares: shares,
+    method: 'largest-remainder',
+    balanced: Math.abs(sum - Math.round(totalCents) / 100) < 1e-9
+  };
+}
+
 var API = {
   GOALS: GOALS, normGoal: normGoal, parseSlots: parseSlots, currentSlot: currentSlot,
   servings: servings, includesDrink: includesDrink, hitAvoid: hitAvoid,
   makePlans: makePlans, nutritionOf: nutritionOf, hasKcal: hasKcal,
+  splitBill: splitBill, largestRemainder: largestRemainder,
   RICE_BOWL: RICE_BOWL, WALK_KCAL: WALK_KCAL, WALK_SPEED: WALK_SPEED
 };
 

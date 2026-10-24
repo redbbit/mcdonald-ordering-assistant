@@ -225,6 +225,18 @@
     var byCode = {};
     DISHES.forEach(function (d) { byCode[d.code] = d; });
 
+    /* 双模式：传了 adapter 就是在线，没传就当离线快照用。
+       SIMULATED 的含义是「这个价格不是此刻官方算出来的」，离线恒为 true。 */
+    var ADAPTER = opt.adapter || null;
+    var MODE = ADAPTER ? ADAPTER.mode : 'offline';
+    var FETCHED_AT = (DATA && DATA.fetchedAt) || null;
+    var SIMULATED = (MODE === 'offline');
+
+    /** 给任何返回值打上模式标记，前端靠它决定显示绿色还是黄色。 */
+    function stamp(o) {
+      return Object.assign({ mode: MODE, fetchedAt: FETCHED_AT, simulated: SIMULATED }, o);
+    }
+
     /* 计划注册表：recommendPlans 之后按 planId 回溯 */
     var plans = {};
     var seq = 0;
@@ -457,6 +469,12 @@
         subtitle: raw.sub,
         why: buildWhy(raw, N, q, targetPer, unknownNames),
 
+        /* 双模式标记：离线时价格来自快照，UI 必须显示黄色「预演校验」而非绿色对勾 */
+        mode: MODE,
+        fetchedAt: FETCHED_AT,
+        simulated: SIMULATED,
+        priceSource: SIMULATED ? 'snapshot' : 'mcp-live',
+
         people: N,
         items: items,
         itemCount: items.length,
@@ -626,6 +644,49 @@
     /* ---------------- getPlan / getNutritionByProductCodes ---------------- */
     function getPlan(planId) { return p(plans[planId] || null); }
 
+    /**
+     * 分账。三种口径都走最大余额法，保证各份之和 === 总额。
+     *
+     *   注意命名：返回里 splitMode 是分账口径（even / byItem / byWeight），
+     *   mode 是数据源模式（online / offline）——两个都叫 mode 会混。
+     *
+     *   离线时 simulated 恒为 true，因为分摊的基础是快照价，不是此刻官方算价。
+     */
+    function splitBill(planId, opt) {
+      opt = opt || {};
+      var plan = plans[planId];
+      if (!plan) {
+        return Promise.reject(Object.assign(
+          new Error('planId 不存在或已过期'), { code: 'NO_PLAN' }));
+      }
+      var src = opt.items || plan.items;
+      var bill = E.splitBill(plan.totalPrice, {
+        mode: opt.mode || 'even',
+        members: opt.members,
+        people: opt.people || plan.people,
+        items: src.map(function (i) {
+          return {
+            code: i.productCode || i.code, name: i.name,
+            price: i.unitPrice != null && i.quantity ? i.unitPrice : i.price,
+            qty: i.quantity || i.q || 1,
+            owners: i.owners
+          };
+        })
+      });
+
+      return p(stamp({
+        planId: planId,
+        splitMode: bill.mode,
+        currency: 'CNY',
+        total: bill.total,
+        people: plan.people,
+        shares: bill.shares,
+        method: bill.method,
+        balanced: bill.balanced,
+        note: SIMULATED ? '预演分账，在线后校准' : '按实付分摊'
+      }));
+    }
+
     function getNutritionByProductCodes(codes) {
       var out = {};
       (codes || []).forEach(function (c) {
@@ -657,7 +718,10 @@
       recommendPlans: recommendPlans,
       getPlan: getPlan,
       calculatePlan: calculatePlan,
+      splitBill: splitBill,
       buildOrderSummary: buildOrderSummary,
+      mode: function () { return MODE; },
+      isSimulated: function () { return SIMULATED; },
       getNutritionByProductCodes: getNutritionByProductCodes,
       resolveImage: function (url, local) { return resolveImage(url, local); },
       getAvoidOptions: getAvoidOptions,
