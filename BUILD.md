@@ -22,17 +22,23 @@ python tools/build_campaigns.py   # 可选：单独刷新官方活动日历
 
 ---
 
-## 2. 架构：为什么页面不联网
+## 2. 架构：为什么浏览器从不直连 MCP
 
-**构建期调 MCP → 落本地快照 → 运行时零网络。**
+**浏览器要么读本地快照，要么只跟本机服务说话——它从头到尾没碰过 `mcp.mcd.cn`。**
 
 理由三条：
 
 1. 浏览器**不可能**直连 `mcp.mcd.cn`：没有给浏览器用的 CORS 头，且只要前端直连，Token 就一定出现在 JS 里，F12 抄走即可——违反任何一条安全要求。
 2. **断网 + `file://` 双击可演示**是硬需求。会场网络不可控。
-3. 这不削弱"真的调用了 MCP"：调用发生在构建期，**122 款商品每一款都真实跑过 `calculate-price`**，图片是从官方 CDN 下载的原始图，每次调用记录见 **`EVIDENCE.md`**。
+3. 这不削弱"真的调用了 MCP"：调用真实发生过，**122 款商品每一款都真实跑过 `calculate-price`**，图片是从官方 CDN 下载的原始图，每次调用记录见 **`EVIDENCE.md`**。
 
-运行时浏览器里**没有任何** `fetch` / `XHR` / `WebSocket` / 外部 CDN 引用，这一点由 `check_release.js` 强制校验。
+需要当场调 MCP 时（在线模式），中间加一层本机服务：
+
+```
+浏览器 ──► 127.0.0.1:4317/api/* ──► server.py（唯一持有 Token 的进程）──► mcp.mcd.cn
+```
+
+不起服务时走离线路径，**全程零网络请求**。`check_release.js` 强制校验的是：代码里不得出现任何**外部域名**请求目标（本机服务与官方图床允许）。
 
 ---
 
@@ -53,7 +59,7 @@ python tools/build_campaigns.py   # 可选：单独刷新官方活动日历
 
 要在 `file://` 下生效，只能写在 `<meta>` 里（HTTP 响应头用不上）。
 
-**宽松档（推荐，兼容性最好）**——允许内联样式和 `onerror` 降级：
+**宽松档（当前采用）**——允许内联 `<script>` 和 `onclick`，不用改事件绑定方式：
 
 ```html
 <meta http-equiv="Content-Security-Policy" content="
@@ -61,26 +67,30 @@ python tools/build_campaigns.py   # 可选：单独刷新官方活动日历
   script-src 'self' 'unsafe-inline';
   style-src 'self' 'unsafe-inline';
   img-src 'self' data: blob:;
-  connect-src 'none';
+  connect-src 'self';
   font-src 'self' data:;
   base-uri 'none'; form-action 'none'
 ">
 ```
 
-**严格档**——`connect-src 'none'` 从协议层掐死一切联网企图，但要求**不用内联 `<script>`、不用 `onclick` 属性**，事件一律走 `addEventListener`：
+**严格档**——去掉 `unsafe-inline`，要求**不用内联 `<script>`、不用 `onclick` 属性**，事件一律走 `addEventListener`：
 
 ```html
 <meta http-equiv="Content-Security-Policy" content="
   default-src 'self' data: blob:;
   script-src 'self';
   style-src 'self';
-  img-src 'self' data: blob: https://*.mcd.cn;
-  connect-src 'none';
+  img-src 'self' data: blob:;
+  connect-src 'self';
   base-uri 'none'; form-action 'none'
 ">
 ```
 
-> 无论哪一档，`connect-src 'none'` 都是核心——它就是"这个页面不可能联网"的机器可验证声明。
+> **`connect-src 'self'` 是核心**，它就是"这个页面只能连本机服务"的机器可验证声明。
+>
+> ⚠️ 早期版本写的是 `connect-src 'none'`（那时是纯离线单模式）。双模式下必须改成 `'self'`，否则浏览器会把到本机服务的请求全部拦掉，在线模式永远进不去。
+>
+> 另一个坑：**`file://` 下 `'self'` 不等于 `127.0.0.1`**。所以在线演示请起服务后访问 `http://127.0.0.1:4317/`（server.py 会托管网页本身，同源），而不要双击 `index.html` 再指望它连上服务——双击就是离线模式，这是设计如此。
 
 ---
 
