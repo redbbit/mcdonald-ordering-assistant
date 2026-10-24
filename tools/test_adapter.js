@@ -67,6 +67,11 @@ console.log('===================================================================
 
     const menu = await off.getMenu();
     check(menu.length > 0, '离线菜单来自快照', menu.length + ' 款');
+
+    // ④ 离线没有「按订单类型的门店券」：如实降级，不编
+    const sc = await off.getStoreCoupons({ dining: 'delivery' });
+    check(sc.available === false && sc.simulated === true, '④ 离线门店券如实降级', 'reason=' + sc.reason);
+    check(Array.isArray(sc.coupons) && sc.coupons.length === 0, '④ 离线门店券不给假数据');
   }
 
   /* ---------------------------------------------------- ② Mock：五种情形 */
@@ -96,6 +101,30 @@ console.log('===================================================================
       new A.MockOnlineAdapter({ scenario: 'soldout', latency: 5 }), ['a', 'b']);
     check(pr.items[0].state === 'soldout' && pr.items[1].state === 'available',
       '售罄探测区分 soldout / available');
+  }
+
+  /* ---------------------------------------------------- ②b 在线：dining → orderType 映射 */
+  console.log('\n[2b] OnlineAdapter · dining → orderType 映射（桩掉 _req，不真发请求）');
+  {
+    const on = new A.OnlineAdapter({ base: 'http://127.0.0.1:9' });
+    let captured = null;
+    on._req = function (path, opt) {
+      captured = { path: path, body: (opt && opt.body) || null };
+      return Promise.resolve({ ok: true, data: { price: 10 }, requestId: 'r', fetchedAt: 't' });
+    };
+    await on.calculatePrice([{ code: 'a', qty: 1 }], { storeCode: '1400028' });
+    check(captured.body.orderType === 1 && captured.body.beType === 1, '默认按到店自取（orderType=1/beType=1）');
+    check(!('beCode' in captured.body), '到店场景不传 beCode');
+    await on.calculatePrice([{ code: 'a', qty: 1 }], { storeCode: '1400028', dining: 'delivery', beCode: 'B1' });
+    check(captured.body.orderType === 2 && captured.body.beType === 2, '外送场景 orderType=2/beType=2');
+    check(captured.body.beCode === 'B1', '外送场景透传 beCode');
+
+    await on.getStoreCoupons({ storeCode: '1400028', dining: 'delivery', beCode: 'B1' });
+    check(captured.path.indexOf('orderType=2') >= 0 && captured.path.indexOf('beCode=B1') >= 0,
+      '外送查券带 orderType=2 与 beCode', captured.path);
+    await on.getStoreCoupons({ storeCode: '1400028' });
+    check(captured.path.indexOf('orderType=1') >= 0 && captured.path.indexOf('beCode=') < 0,
+      '到店查券不带 beCode', captured.path);
   }
 
   /* ---------------------------------------------------- ③ 降级 */

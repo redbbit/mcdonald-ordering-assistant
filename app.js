@@ -514,6 +514,9 @@
     $('splitPlan').innerHTML = selected.map(function (plan) { return '<option value="' + attr(plan.planId) + '">' + esc(plan.title || '个性套餐') + ' · ' + money(plan.totalPrice) + '</option>'; }).join('');
     $('splitMembers').value = selected[0].people || $('people').value || 2;
     $('splitStatus').textContent = '离线时是预演分账；在线时按服务返回的金额分摊。';
+    // 点餐方式/用餐方式跟着方案里解析到的值走（各自点+未说明是默认）
+    $('assignOrderMode').value = selected[0].orderMode === 'together' ? 'together' : 'split';
+    $('assignDining').value = (selected[0].dining === 'dineIn' || selected[0].dining === 'delivery') ? selected[0].dining : '';
     $('assignResult').hidden = true;
     $('assignResult').innerHTML = '';
     renderSplitMembers();
@@ -573,7 +576,12 @@
     $('assignResult').hidden = false;
     $('assignResult').innerHTML = '<p class="soft-placeholder">正在拆单并估算用券…</p>';
     try {
-      var ao = await S.assignOrders(plan.planId, { members: members, useCoupons: $('assignUseCoupons').checked });
+      var ao = await S.assignOrders(plan.planId, {
+        members: members,
+        useCoupons: $('assignUseCoupons').checked,
+        orderMode: $('assignOrderMode').value,
+        dining: $('assignDining').value || null
+      });
       renderAssignResult(ao || {});
     } catch (error) {
       $('assignResult').innerHTML = '<div class="notice notice-warn">' + esc(error && error.message ? error.message : '拆单暂时失败，请重试。') + '</div>';
@@ -583,7 +591,12 @@
     var t = ao.totals || {};
     var combined = ao.combined || {};
     var cmp = ao.comparison || {};
+    var together = ao.orderMode === 'together';
     var cards = (ao.members || []).map(function (m) {
+      // 合单模式（一人点完所有人）：每个人拿到的是人均份额，不是独立小单
+      if (together || m.share) {
+        return '<div class="assign-card"><strong>' + money(m.payAfterCoupon) + '</strong><span>' + esc(m.name) + ' · 人均</span><span class="assign-coupon none">全单一张券（见下方）</span><span class="assign-pay">分摊 ' + money(m.subtotal) + '</span></div>';
+      }
       var coupon = m.coupon;
       var couponHtml = coupon
         ? '<span class="assign-coupon">用「' + esc(coupon.title) + '」估省 ' + money(coupon.estimatedCut) + '</span>'
@@ -594,16 +607,53 @@
       return '<div class="assign-card"><strong>' + money(m.subtotal) + '</strong><span>' + esc(m.name) + '</span>' + couponHtml + '<span class="assign-pay">估付 ' + money(m.payAfterCoupon) + '</span>' + realHtml + '</div>';
     }).join('');
     var combinedLabel = combined.coupon ? '用「' + esc(combined.coupon.title) + '」估省 ' + money(combined.coupon.estimatedCut) : '无可用券';
-    var notes = (ao.notes || []).map(function (n) { return '<li>' + esc(n) + '</li>'; }).join('');
-    $('assignResult').innerHTML =
-      '<div class="assign-summary">' +
-        '<div class="assign-stat"><b>' + money(t.splitSubtotal) + '</b><span>拆单小计合计</span></div>' +
+    // 合单模式统计卡语义不同：没有「拆单」，只有整单和人均
+    var sharesList = (ao.members || []).map(function (m) { return m.subtotal; })
+      .filter(function (v) { return typeof v === 'number'; });
+    var perText = sharesList.length
+      ? (Math.min.apply(null, sharesList) === Math.max.apply(null, sharesList)
+        ? money(Math.min.apply(null, sharesList))
+        : money(Math.min.apply(null, sharesList)) + '~' + money(Math.max.apply(null, sharesList)))
+      : money(combined.payEstimate);
+    var statHtml = together
+      ? '<div class="assign-stat"><b>' + money(t.splitSubtotal) + '</b><span>整单小计</span></div>' +
+        '<div class="assign-stat"><b>' + money(t.estimatedCouponCut) + '</b><span>全单用券估省</span></div>' +
+        '<div class="assign-stat"><b>' + money(t.splitPayEstimate) + '</b><span>整单估付</span></div>' +
+        '<div class="assign-stat"><b>' + perText + '</b><span>人均估付</span></div>'
+      : '<div class="assign-stat"><b>' + money(t.splitSubtotal) + '</b><span>拆单小计合计</span></div>' +
         '<div class="assign-stat"><b>' + money(t.estimatedCouponCut) + '</b><span>分人用券估省</span></div>' +
         '<div class="assign-stat"><b>' + money(t.splitPayEstimate) + '</b><span>拆单估付合计</span></div>' +
-        '<div class="assign-stat"><b>' + money(combined.payEstimate) + '</b><span>合单估付 · ' + combinedLabel + '</span></div>' +
-      '</div>' +
+        '<div class="assign-stat"><b>' + money(combined.payEstimate) + '</b><span>合单估付 · ' + combinedLabel + '</span></div>';
+    // 券账本：每张券一行，说明用/没用/为什么
+    var ledger = ao.ledger || {};
+    var ledgerStatusMap = { used: '已用', skipped: '未排上', unavailable: '不适用', 'no-benefit': '无收益', off: '未启用' };
+    var ledgerRows = (ledger.rows || []).map(function (r) {
+      var cls = r.status === 'used' ? 'used' : (r.status === 'skipped' ? 'skipped' : (r.status === 'unavailable' ? 'unavailable' : 'muted'));
+      var who = r.usedBy ? (' · ' + esc(r.usedBy)) : '';
+      var cutText = r.status === 'used'
+        ? money(r.estimatedCut)
+        : (r.status === 'skipped' ? '可省 ' + money(r.estimatedCut) : '—');
+      return '<div class="assign-ledger-row ' + cls + '">' +
+        '<span class="assign-ledger-title">' + esc(r.title) + '<i>' + esc(r.typeLabel || '') + who + '</i></span>' +
+        '<span class="assign-ledger-cut">' + cutText + '</span>' +
+        '<span class="assign-ledger-status">' + esc(ledgerStatusMap[r.status] || r.status) + '</span>' +
+        '<span class="assign-ledger-reason">' + esc(r.reason || '') + '</span>' +
+      '</div>';
+    }).join('');
+    var ledgerStats = ledger.stats
+      ? '<div class="assign-ledger-stats">共 ' + ledger.stats.total + ' 张 · 适用 ' + ledger.stats.applicable +
+        ' 张 · 用出 ' + ledger.stats.used + ' 张 · 未排上 ' + ledger.stats.skipped +
+        ' 张 · 不适用 ' + ledger.stats.unavailable + ' 张 · 估省合计 ' + money(ledger.stats.estimatedCutTotal) + '</div>'
+      : '';
+    var ledgerHtml = (ledger.rows && ledger.rows.length)
+      ? '<section class="assign-ledger"><h4>券账本</h4>' + ledgerStats + '<div class="assign-ledger-rows">' + ledgerRows + '</div></section>'
+      : '';
+    var notes = (ao.notes || []).concat(ledger.notes || []).map(function (n) { return '<li>' + esc(n) + '</li>'; }).join('');
+    $('assignResult').innerHTML =
+      '<div class="assign-summary">' + statHtml + '</div>' +
       '<p class="assign-verdict">' + esc(cmp.verdict || '两条路子估算打平') + '</p>' +
       '<div class="assign-cards">' + cards + '</div>' +
+      ledgerHtml +
       (notes ? '<ul class="assign-notes">' + notes + '</ul>' : '');
   }
 

@@ -299,6 +299,31 @@ input[type="number"], input[type="text"] { min-height: 44px; }
 .assign-pay { font-size:11px !important; font-weight:800; color:var(--ink) !important; }
 .assign-real { font-size:10px; font-weight:700; color:#176647; }
 .assign-notes { margin:10px 0 0; padding-left:16px; font-size:10px; line-height:1.7; color:var(--muted); }
+/* 点餐方式 / 用餐方式下拉（语言对齐 split-controls） */
+.assign-controls label { display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:700; color:var(--ink); }
+.assign-controls select { min-height:36px; padding:6px 10px; border:1px solid #dfc7ad; border-radius:9px; background:#fff; color:#35251a; font:inherit; font-size:11px; cursor:pointer; }
+/* 券账本：每张券一行——用出 / 没排上 / 不适用 / 无收益，以及为什么 */
+.assign-ledger { margin-top:12px; border-top:1px dashed #e3d7c3; padding-top:10px; }
+.assign-ledger h4 { margin:0 0 6px; font-size:12px; }
+.assign-ledger-stats { margin-bottom:8px; font-size:10px; font-weight:700; color:var(--muted); }
+.assign-ledger-rows { display:grid; gap:6px; }
+.assign-ledger-row { display:grid; grid-template-columns:minmax(0,1.4fr) auto auto minmax(0,1.6fr); align-items:baseline; gap:4px 10px; padding:7px 10px; border:1px solid #e8ddcb; border-radius:8px; background:#fffdf8; font-size:10px; }
+.assign-ledger-row.used { border-color:#bcdcc4; background:#f3faf4; }
+.assign-ledger-row.skipped { border-color:#e8d9b8; background:#fdf8ec; }
+.assign-ledger-row.unavailable { border-color:#e8d3cb; background:#fbf1ee; }
+.assign-ledger-title { font-weight:800; color:var(--ink); }
+.assign-ledger-title i { display:block; font-style:normal; font-weight:600; color:var(--muted); }
+.assign-ledger-cut { font-weight:800; color:#176647; white-space:nowrap; }
+.assign-ledger-status { font-weight:800; white-space:nowrap; }
+.assign-ledger-row.used .assign-ledger-status { color:#176647; }
+.assign-ledger-row.skipped .assign-ledger-status { color:#80520e; }
+.assign-ledger-row.unavailable .assign-ledger-status { color:#a33b2e; }
+.assign-ledger-row.muted .assign-ledger-status { color:#a09889; }
+.assign-ledger-reason { color:var(--muted); line-height:1.6; }
+@media (max-width:640px) {
+  .assign-ledger-row { grid-template-columns:minmax(0,1fr) auto auto; }
+  .assign-ledger-reason { grid-column:1 / -1; }
+}
 body.projector-mode { font-size:1.14em; }
 body.projector-mode .topbar { padding-block:20px; }
 body.projector-mode .top-meta, body.projector-mode .trust-footer, body.projector-mode .hero-source, body.projector-mode .plan-subtitle, body.projector-mode .plan-why { font-size:1.06em; }

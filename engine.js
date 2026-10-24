@@ -337,13 +337,28 @@ function makePlans(opt) {
   var bmin = Math.max(0, opt.bmin || 0);
   var bmax = opt.unlimited ? Infinity : Math.max(bmin, opt.bmax || 0);
   var goal = normGoal(opt.goal);
+  var lateNight = !!opt.lateNight;
+  var singlesOnly = !!opt.singlesOnly;
+
+  // 菜品级排除：「不要可乐」「不要这道菜」——与忌口（成分级、安全优先）是两件事
+  var excludeCodes = {};
+  (opt.exclude || []).forEach(function (c) { if (c) excludeCodes[c] = true; });
+
+  // 套餐拆解对照表（套餐值得度权重用）
+  var byCodeAll = {};
+  dishes.forEach(function (d) { if (d && d.code) byCodeAll[d.code] = d; });
 
   // 硬过滤：忌口 + 官方算价通过 + 剔除周边 / 单独酱料包等非餐品
+  //        + 菜品级排除（用户点名不要的）+ 单点模式（套餐整体出局）
   var pool = dishes.filter(function (d) {
     if (d.ok !== true) return false;
     if (!isFood(d)) return false;
     if (hitAvoid(d, avoid)) return false;
     if (d.role === 'value') return false;
+    if (excludeCodes[d.code]) return false;
+    /* 单点畅吃：候选池排除套餐。官方分类把一部分套装（X三件套/X套餐）
+     * 归在了「主食」里，只按 role 过滤会漏，这里按品名再补一刀。 */
+    if (singlesOnly && (d.role === 'combo' || /(套餐|组合|桶|分享餐|件套)/.test(d.name || ''))) return false;
     return true;
   });
 
@@ -362,7 +377,11 @@ function makePlans(opt) {
    * （带规格层级惩罚，避免「麦辣鸡腿堡」对上「四件套」），配餐时预留出它的钱，
    * 再尽量塞进每一版；塞不进去的（忌口挡住 / 超预算 / 菜单里没有）进 unmetWanted，如实说明。 */
   var wantedResolved = [];
-  (opt.wanted || []).forEach(function (name) {
+  (opt.wanted || []).forEach(function (w) {
+    // 兼容两种传法：字符串（测试/简单调用）或 {name, fromCombo}（套餐拆开单点）
+    var name = typeof w === 'string' ? w : (w && w.name);
+    var fromCombo = typeof w === 'string' ? null : (w && w.fromCombo) || null;
+    if (!name) return;
     var hit = pickBestDish(name, dishes.filter(function (d) { return d.ok === true && isFood(d); }));
     if (!hit) { wantedResolved.push({ name: name, reason: 'not-found' }); return; }
     if (hitAvoid(hit, avoid)) {
@@ -370,8 +389,8 @@ function makePlans(opt) {
         avoid: avoid.filter(function (v) { return hit.Avoid.indexOf(v) >= 0; }) });
       return;
     }
-    if (wantedResolved.some(function (w) { return w.dish === hit; })) return;
-    wantedResolved.push({ name: hit.name, code: hit.code, dish: hit, reason: '' });
+    if (wantedResolved.some(function (x) { return x.dish === hit; })) return;
+    wantedResolved.push({ name: hit.name, code: hit.code, dish: hit, reason: '', fromCombo: fromCombo });
   });
 
   // 点名菜预算预留：配餐阶段的有效上限先扣掉点名菜总价，别把钱花光导致点名菜插不进来
@@ -389,10 +408,18 @@ function makePlans(opt) {
   function itemW(d, mode) {
     var w = 1;
     w *= 1 + clamp((d.save || 0) / 12, 0, 1.3);                 // 有折扣的更香
+    w *= comboWorthWeight(d, byCodeAll);                        // 套餐 vs 拆开单点：差价维度
     if (isNewDish(d)) w *= (goal.novelty ? 3.6 : 1.4);          // 官方 tags 里的「上新 / 限定」
     if (isPromoDish(d)) w *= (goal.novelty ? 1.8 : 1.25);       // 促销 / 麦金卡优惠
     if (d.taste.indexOf('人气') >= 0) w *= 1.35;                // 官方「人气热卖」标记
     if (hasKcal(d)) w *= 1.5;                                    // 官方有营养数据的优先，热量才有据可依
+    // 宵夜模式：小食/炸鸡/饮品/甜品/分享规格加权，大份正餐略降。
+    // 这是我们的偏好加权，不是官方分类——UI 必须注明
+    if (lateNight) {
+      if (d.role === 'side' || d.role === 'chicken' || d.role === 'drink' || d.role === 'dessert') w *= 1.9;
+      else if (d.role === 'share') w *= 1.6;
+      else if (d.role === 'main' && d.price >= 35) w *= 0.8;
+    }
     if (goal.key === 'lose') {
       if (hasKcal(d) && d.kcal > 620) w *= 0.45;
       if ((d.protein || 0) > 22) w *= 1.5;
@@ -530,7 +557,8 @@ function makePlans(opt) {
       ]
     };
   }
-  return { plans: plans, pool: pool, goal: goal, people: people, wanted: wantedResolved };
+  return { plans: plans, pool: pool, goal: goal, people: people, wanted: wantedResolved,
+           modes: { singlesOnly: singlesOnly, lateNight: lateNight } };
 }
 
 function minPrice(list) {
@@ -776,6 +804,89 @@ function estimateCouponCut(rule, dish, subTotal) {
   return 0;
 }
 
+/* ------------------------------------------------ 用餐方式：堂食 / 外送
+   官方 calculate-price 的 orderType：1 = 到店自取（我们的快照价就是这一档），
+   2 = 外送（麦乐送，还要 beType=2 + beCode；beCode 来自
+   delivery-query-addresses → delivery-query-stores 链）。
+   离线快照只有到店价：外送档的餐价与配送费一律「未估算」，不编。 */
+var DINING_LABEL = { dineIn: '到店/堂食', delivery: '外送/麦乐送' };
+
+/* 用餐方式文本解析：外送类说法 → 'delivery'；到店类说法 → 'dineIn'；没说 → null。
+ * 没说就是没说，不默认堂食——UI 会把它当「未说明」处理，券的适用性据此分支。 */
+function parseDining(text) {
+  var t = text || '';
+  if (/(外送|外卖|麦乐送|送到家|配送|送货|送到学校|送到公司|送到楼下)/.test(t)) return 'delivery';
+  if (/(堂食|到店|店里吃|在店里|自取|得来速|打包|带走)/.test(t)) return 'dineIn';
+  return null;
+}
+
+/* 券类型：券面标题分流。
+   官方 available-coupons 只回名称/图片/状态，**没有适用范围字段**——类型只能从
+   标题文字判断；判断不出就是 'unlabeled'（未标注），按通用券处理，
+   并在账本里注明「官方券面未标注适用范围」，不装懂。
+   在线模式另有 query-store-coupons 按 orderType 返回真实可用券，可覆盖此推断。 */
+function parseCouponType(title) {
+  var t = (title || '').trim();
+  if (!t) return 'unlabeled';
+  if (/(外送|麦乐送|配送|外卖|送到家)/.test(t)) return 'delivery';
+  if (/(堂食|到店|自取|得来速|餐厅|店内)/.test(t)) return 'dineIn';
+  return 'unlabeled';
+}
+var COUPON_TYPE_LABEL = { delivery: '外送券', dineIn: '堂食券', unlabeled: '未标注范围' };
+
+/* 这张券在当前用餐方式下能不能用。返回 {ok, reason}，reason 是给人看的那句话。 */
+function couponApplies(couponType, dining) {
+  if (!dining) return { ok: true, reason: '' };              // 用户没说堂食/外送：不拦
+  if (couponType === 'unlabeled') {
+    return { ok: true, reason: '官方券面未标注适用范围，按通用券处理' };
+  }
+  if (couponType === dining) return { ok: true, reason: '' };
+  return {
+    ok: false,
+    reason: '该券为' + (COUPON_TYPE_LABEL[couponType] || couponType) + '，当前是' +
+      (DINING_LABEL[dining] || dining) + '单，不可用'
+  };
+}
+
+/* ------------------------------------------------ 点餐模式：各自点 / 一人代点
+   多人场景的两种组织方式（用户明确要求这是两个选择）：
+     split     各自点——拆成每人一张小单，各用各的券
+     together  一人点完所有人的——一张合单用一张券，按人均展示          */
+function parseOrderMode(text) {
+  var t = text || '';
+  if (/(各点各|各自点|分开点|各付各|各买各|自己点自己的|AA|aa)/.test(t)) return 'split';
+  if (/(一起点|一个人点|我请|帮大家点|帮着点|代点|合起来点|省事|点一份大家|大家分一份)/.test(t)) return 'together';
+  return null;
+}
+var ORDER_MODE_LABEL = { split: '各自点', together: '一人点完所有人' };
+
+/* ------------------------------------------------ 特色模式（用户点名要的两个）
+   singlesOnly「哥/姐有钱，就喜欢单点」：候选池排除套餐，只出单点商品；
+   lateNight  「宵夜模式」：偏好加权偏向小食/炸鸡/饮品/甜品/分享规格。
+   注意：宵夜适合吃什么**没有官方分类**，这是我们自己的偏好加权，
+   UI 必须注明，不能冒充官方标签。                                */
+function parseModes(text) {
+  var t = text || '';
+  return {
+    singlesOnly: /(单点|就要单点|只单点|不要套餐|不想吃套餐|有钱|拆开单点|单点就行|单点畅吃)/.test(t),
+    lateNight: /(宵夜|夜宵|半夜|凌晨|深夜|夜猫|通宵|晚上饿|夜里想吃)/.test(t)
+  };
+}
+var MODE_LABEL = { singlesOnly: '单点畅吃', lateNight: '宵夜模式' };
+
+/* 套餐 vs 拆开单点：差价只是维度之一，但先把它算对。
+   子项有官方价时：套餐价比子项单点合计低 ≥1 元 → 套餐本身划算，加权；
+   拆开更便宜 ≥1 元 → 套餐不值这个价，降权。子项没价就原样返回，不猜。
+   （热量/营养/喜好维度由 goal 权重与评分负责，不在这一个函数里重复。） */
+function comboWorthWeight(dish, byCode) {
+  if (!dish || dish.role !== 'combo' || !byCode) return 1;
+  var cb = comboBreakdown(dish, byCode);
+  if (!cb) return 1;
+  if (cb.save >= 1) return 1.3;
+  if (cb.save <= -1) return 0.72;
+  return 1;
+}
+
 /* ------------------------------------------------ 多人拆单（问题一）
    把「总需求清单」按成员拆成各自的小单，再给每张小额单配一张券。
    约束与假设（全部对用户明示）：
@@ -867,9 +978,13 @@ var API = {
   servings: servings, includesDrink: includesDrink, hitAvoid: hitAvoid,
   makePlans: makePlans, nutritionOf: nutritionOf, hasKcal: hasKcal,
   splitBill: splitBill, largestRemainder: largestRemainder,
-  comboBreakdown: comboBreakdown,
-  nameMatchScore: nameMatchScore, pickBestDish: pickBestDish,
+  comboBreakdown: comboBreakdown, comboWorthWeight: comboWorthWeight,
+  nameMatchScore: nameMatchScore, pickBestDish: pickBestDish, isFood: isFood,
   parseCouponRule: parseCouponRule, matchCouponDish: matchCouponDish, estimateCouponCut: estimateCouponCut,
+  parseCouponType: parseCouponType, couponApplies: couponApplies, parseDining: parseDining,
+  DINING_LABEL: DINING_LABEL, COUPON_TYPE_LABEL: COUPON_TYPE_LABEL,
+  parseOrderMode: parseOrderMode, ORDER_MODE_LABEL: ORDER_MODE_LABEL,
+  parseModes: parseModes, MODE_LABEL: MODE_LABEL,
   buildSubOrders: buildSubOrders, optimizeCoupons: optimizeCoupons,
   RICE_BOWL: RICE_BOWL, WALK_KCAL: WALK_KCAL, WALK_SPEED: WALK_SPEED
 };

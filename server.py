@@ -73,6 +73,7 @@ class McpError(Exception):
 
 _client = None
 _token_hint = None
+_be_code_cache = {}          # 外送 beCode 缓存：取到一次就复用，失败也缓存不反复打
 
 
 def _read_env_value(path, key="MCD_MCP_TOKEN"):
@@ -239,6 +240,63 @@ def parse_calc_price(result):
     }
 
 
+# ------------------------------------------------------------ 外送（麦乐送）beCode 链路
+
+def _dig_field(obj, keys):
+    """
+    官方配送类接口的响应形状没有实测文档，这里只做宽容逐层查找：
+    任何层级出现指定字段就返回其字符串值，找不到返回 None。
+    找不到就如实找不到——绝不编一个 beCode 或用门店编码冒充。
+    """
+    if isinstance(obj, dict):
+        for k in keys:
+            v = obj.get(k)
+            if isinstance(v, (str, int)) and str(v).strip():
+                return str(v).strip()
+        for v in obj.values():
+            hit = _dig_field(v, keys)
+            if hit:
+                return hit
+    elif isinstance(obj, list):
+        for v in obj:
+            hit = _dig_field(v, keys)
+            if hit:
+                return hit
+    return None
+
+
+def resolve_delivery_be_code():
+    """
+    外送算价/查券必须带 beCode（官方文档明示：orderType=2 场景必传）。
+    链路：delivery-query-addresses（无参）→ 取地址 addressId
+         → delivery-query-stores(addressId, beType=2) → 取门店 beCode。
+    任何一步失败都返回 None，调用方据此降级；成功与失败都缓存，不反复打官方。
+    """
+    if _be_code_cache.get("beCode"):
+        return _be_code_cache["beCode"]
+    if _be_code_cache.get("failed"):
+        return None
+    try:
+        addrs = checked(call_tool("delivery-query-addresses", {}),
+                        "delivery-query-addresses")
+        address_id = _dig_field(addrs, ("addressId", "addressID"))
+        if not address_id:
+            _be_code_cache["failed"] = "no_address"
+            return None
+        stores = checked(call_tool("delivery-query-stores",
+                                   {"addressId": address_id, "beType": 2}),
+                         "delivery-query-stores")
+        be_code = _dig_field(stores, ("beCode", "be_code"))
+        if not be_code:
+            _be_code_cache["failed"] = "no_store"
+            return None
+        _be_code_cache["beCode"] = be_code
+        return be_code
+    except McpError:
+        _be_code_cache["failed"] = "mcp_error"
+        return None
+
+
 # ------------------------------------------------------------ 业务处理
 
 def handle_health(query):
@@ -267,7 +325,8 @@ def handle_health(query):
         "storeCode": STORE_CODE_DEFAULT,
         "tools": ["query-nearby-stores", "query-meals", "list-nutrition-foods",
                   "available-coupons", "campaign-calendar", "query-meal-detail",
-                  "calculate-price"],
+                  "calculate-price", "query-store-coupons",
+                  "delivery-query-addresses", "delivery-query-stores"],
         "note": "本服务不代理 create-order，也不会返回任何凭据",
     }
 
@@ -310,15 +369,26 @@ def handle_price(payload):
     if not items:
         raise McpError("items 不能为空", code="bad_request", status=400)
 
-    # orderType / beType 是必填：1 = 到店，1 = 到店取餐。漏传官方会返回 success:false
+    # orderType / beType 是必填：1 = 到店自取，2 = 外送（麦乐送）。
+    # 外送还额外必须带 beCode（地址业务编码）——官方文档明示 orderType=2 场景必传。
     # couponCode 是官方 calculate-price 的逐项入参（优惠券code），有就透传——
     # 以前这里没收发它，前端发了也被丢掉，在线试券永远是假戏。
+    order_type = int(payload.get("orderType") or 1)
     args = {
         "storeCode": store,
-        "orderType": int(payload.get("orderType") or 1),
-        "beType": int(payload.get("beType") or 1),
+        "orderType": order_type,
+        "beType": int(payload.get("beType") or (2 if order_type == 2 else 1)),
         "items": [],
     }
+    if order_type == 2:
+        be_code = payload.get("beCode") or resolve_delivery_be_code()
+        if not be_code:
+            # 拿不到 beCode 就明说：绝不拿到店价冒充外送价，也不编配送费
+            raise McpError(
+                "外送算价需要配送地址 beCode，本机未能通过官方配送接口取到"
+                "（可能未保存配送地址）。金额已按到店价展示，外送侧未估算。",
+                code="no_be_code", status=422)
+        args["beCode"] = be_code
     for it in items:
         row = {"productCode": it.get("code"), "quantity": int(it.get("qty") or 1)}
         if it.get("couponCode"):
@@ -332,6 +402,28 @@ def handle_price(payload):
                        status=422)
     parsed.pop("raw", None)
     return parsed
+
+
+def handle_store_coupons(query):
+    """
+    按【门店 + 订单类型】查可用券——这是「堂食券 / 外送券」的官方真源。
+    available-coupons 只回券标题/图片/状态、不回适用范围；
+    这个工具才按 orderType 过滤，外送场景同样要 beCode。
+    """
+    store = query.get("storeCode") or STORE_CODE_DEFAULT
+    order_type = int(query.get("orderType") or 1)
+    args = {
+        "storeCode": store,
+        "orderType": order_type,
+        "beType": int(query.get("beType") or (2 if order_type == 2 else 1)),
+    }
+    if order_type == 2:
+        be_code = query.get("beCode") or resolve_delivery_be_code()
+        if not be_code:
+            raise McpError("外送查券需要配送地址 beCode，本机未能通过官方配送接口取到",
+                           code="no_be_code", status=422)
+        args["beCode"] = be_code
+    return checked(call_tool("query-store-coupons", args), "query-store-coupons")
 
 
 def handle_probe(payload):
@@ -376,14 +468,15 @@ def handle_img(query):
 
 
 ROUTES = {
-    "/api/health":     ("GET",  handle_health),
-    "/api/store":      ("GET",  handle_store),
-    "/api/menu":       ("GET",  handle_menu),
-    "/api/nutrition":  ("GET",  handle_nutrition),
-    "/api/campaigns":  ("GET",  handle_campaigns),
-    "/api/price":      ("POST", handle_price),
-    "/api/probe":      ("POST", handle_probe),
-    "/api/img":        ("GET",  handle_img),
+    "/api/health":         ("GET",  handle_health),
+    "/api/store":          ("GET",  handle_store),
+    "/api/menu":           ("GET",  handle_menu),
+    "/api/nutrition":      ("GET",  handle_nutrition),
+    "/api/campaigns":      ("GET",  handle_campaigns),
+    "/api/store-coupons":  ("GET",  handle_store_coupons),
+    "/api/price":          ("POST", handle_price),
+    "/api/probe":          ("POST", handle_probe),
+    "/api/img":            ("GET",  handle_img),
 }
 
 

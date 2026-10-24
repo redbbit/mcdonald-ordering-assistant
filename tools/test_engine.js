@@ -200,6 +200,68 @@ check(!rw3.error && rw3.wanted.some(w => w.name === '麦辣鸡腿汉堡' && w.re
   '忌口挡住点名菜时应记录 reason=avoid');
 console.log(`   忌辣又点麦辣鸡腿汉堡：${JSON.stringify(rw3.wanted)}`);
 
+/* ---- 本轮新增：堂食/外送 · 点餐模式 · 特色模式（用户六项要求）---- */
+console.log('\n■ 用餐方式 / 点餐模式 / 特色模式');
+check(E.parseDining('外送到学校') === 'delivery' && E.parseDining('麦乐送') === 'delivery', 'parseDining 外送关键词');
+check(E.parseDining('堂食') === 'dineIn' && E.parseDining('到店自取') === 'dineIn' && E.parseDining('得来速') === 'dineIn', 'parseDining 堂食关键词');
+check(E.parseDining('3个人100块') === null, 'parseDining 没说不默认堂食');
+check(E.parseCouponType('外送专享福利券') === 'delivery', 'parseCouponType 外送券');
+check(E.parseCouponType('堂食券') === 'dineIn', 'parseCouponType 堂食券');
+check(E.parseCouponType('免费脆薯饼') === 'unlabeled', 'parseCouponType 未标注（真实数据里的券都没标）');
+check(E.couponApplies('dineIn', 'delivery').ok === false, '堂食券不上外送单');
+check(E.couponApplies('delivery', 'dineIn').ok === false, '外送券不接到店单');
+check(E.couponApplies('unlabeled', 'delivery').ok === true, '未标注券按通用券处理');
+check(E.couponApplies('dineIn', null).ok === true, '未说明用餐方式时不卡券');
+check(E.parseOrderMode('各点各的') === 'split' && E.parseOrderMode('AA') === 'split', 'parseOrderMode 各自点');
+check(E.parseOrderMode('我请客一起点') === 'together' && E.parseOrderMode('帮大家点') === 'together', 'parseOrderMode 一人点完所有人');
+check(E.parseOrderMode('3个人') === null, 'parseOrderMode 没说不瞎猜');
+const newModes = E.parseModes('哥有钱，就喜欢单点，宵夜模式');
+check(newModes.singlesOnly === true && newModes.lateNight === true, 'parseModes 两个特色模式都认');
+check(E.parseModes('3个人100块').singlesOnly === false && E.parseModes('3个人100块').lateNight === false, 'parseModes 不误报');
+
+/* singlesOnly「哥/姐有钱，就喜欢单点」：候选池排除套餐 */
+const rso = E.makePlans({ dishes: D.dishes, people: 2, bmax: 100, goal: '', singlesOnly: true, seed: 20261025 });
+if (!rso.error) {
+  check(rso.plans.every(p => p.items.every(i => i.d.role !== 'combo' && !/(套餐|组合|桶|分享餐|件套)/.test(i.d.name))),
+    '单点畅吃：任何方案都不应含套餐/套装（官方分类漏标的按品名补过滤）');
+  console.log(`   单点畅吃三版：${rso.plans.map(p => p.items.map(i => i.d.name).join('+')).join(' | ')}`);
+} else check(false, '单点畅吃模式不应报错');
+
+/* lateNight「宵夜模式」：只做偏好加权，不能把方案配崩 */
+const rln = E.makePlans({ dishes: D.dishes, people: 1, bmax: 50, goal: '', lateNight: true, seed: 20261025 });
+check(!rln.error && rln.plans.length > 0, '宵夜模式应正常出方案');
+if (!rln.error) console.log(`   宵夜模式首版：${rln.plans[0].items.map(i => i.d.name).join('+')}（偏好加权，非官方分类）`);
+
+/* exclude：菜品级排除（「不要可乐」——与忌口是两件事） */
+const drink = D.dishes.filter(d => d.ok === true && /可乐/.test(d.name))[0];
+const rex = E.makePlans({ dishes: D.dishes, people: 2, bmax: 100, goal: '', exclude: [drink.code], seed: 20261025 });
+if (!rex.error) {
+  check(rex.plans.every(p => p.items.every(i => i.d.code !== drink.code)), '被排除的菜品不应出现在任何方案里');
+  console.log(`   排除「${drink.name}」后仍出 ${rex.plans.length} 版`);
+} else check(false, '带 exclude 的配餐不应报错');
+
+/* 套餐拆开单点：wanted 子项带 fromCombo 标记，按单点进方案 */
+const comboWithParts = D.dishes.filter(d => d.role === 'combo' && d.parts && d.parts.length)[0];
+if (comboWithParts) {
+  const part = comboWithParts.parts[0];
+  const rpc = E.makePlans({ dishes: D.dishes, people: 1, bmax: 80, goal: '',
+    wanted: [{ name: part.name, fromCombo: comboWithParts.name }], seed: 20261025 });
+  if (!rpc.error) {
+    check(rpc.plans.every(p => p.items.some(i => i.d.name === part.name)), '套餐拆出的子项应按单点进方案');
+    console.log(`   「${comboWithParts.name}」只要「${part.name}」→ ${rpc.plans[0].items.map(i => i.d.name).join('+')}`);
+  } else check(false, '套餐拆开单点不应报错');
+} else { console.log('   ⚠️ 数据里没有带 parts 的套餐（已知边界）'); }
+
+/* comboWorthWeight：省 ≥1 元加权 1.3，拆开更便宜降权 0.72，其余 1 */
+const byCodeAll = {}; D.dishes.forEach(d => { byCodeAll[d.code] = d; });
+const combosWithParts = D.dishes.filter(d => d.role === 'combo' && d.parts && d.parts.length);
+const worthUp = combosWithParts.filter(c => { const cb = E.comboBreakdown(c, byCodeAll); return cb && cb.save >= 1; })[0];
+const worthDown = combosWithParts.filter(c => { const cb = E.comboBreakdown(c, byCodeAll); return cb && cb.save <= -1; })[0];
+if (worthUp) check(E.comboWorthWeight(worthUp, byCodeAll) === 1.3, '套餐真划算应加权 1.3');
+if (worthDown) check(E.comboWorthWeight(worthDown, byCodeAll) === 0.72, '套餐不值应降权 0.72');
+check(E.comboWorthWeight(D.dishes.filter(d => d.role !== 'combo')[0], byCodeAll) === 1, '非套餐权重恒 1');
+console.log(`   套餐值得度：加权 ${combosWithParts.filter(c => E.comboWorthWeight(c, byCodeAll) === 1.3).length} 个 / 降权 ${combosWithParts.filter(c => E.comboWorthWeight(c, byCodeAll) === 0.72).length} 个 / 持平 ${combosWithParts.filter(c => E.comboWorthWeight(c, byCodeAll) === 1).length} 个`);
+
 console.log('\n' + '='.repeat(78));
 console.log(fail === 0 ? '✅ 全部断言通过' : `❌ ${fail} 条断言失败`);
 if (warned) console.log(`   另有 ${warned} 处已知边界（极端预算下的降级，已在上方 ⚠️ 标出）`);

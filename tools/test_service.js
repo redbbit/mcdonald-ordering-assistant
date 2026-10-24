@@ -244,6 +244,103 @@ console.log('='.repeat(78));
   try { await S.assignOrders('plan-x-999', {}); check(false, '未知 planId 应报错'); }
   catch (e) { check(e.code === 'NO_PLAN', 'assignOrders 未知 planId 错误码'); }
 
+  /* ---- 14. 本轮新增：堂食/外送 · 点餐模式 · 特色模式 · 套餐拆开 · 券账本 ---- */
+  console.log('14. 用餐方式/点餐模式/特色模式/套餐拆开/券账本');
+  // parseQuery 新字段
+  const qd = S.parseQuerySync('外送到学校，3个人，100块', D.dishes);
+  check(qd.dining === 'delivery' && qd.sources.dining === 'text', '文本说外送 → dining=delivery');
+  check(qd.orderMode === 'split' && qd.sources.orderMode === 'default', '没说点餐模式 → 默认各自点');
+  const qt = S.parseQuerySync('堂食，各点各的', D.dishes);
+  check(qt.dining === 'dineIn' && qt.orderMode === 'split', '堂食 + 各点各的都能识别');
+  const qTg = S.parseQuerySync('我请客，帮大家点', D.dishes);
+  check(qTg.orderMode === 'together', '「帮大家点」→ 一人点完所有人');
+  const qMode = S.parseQuerySync('哥有钱就喜欢单点，宵夜模式', D.dishes);
+  check(qMode.modes.singlesOnly === true && qMode.modes.lateNight === true, '两个特色模式都能解析');
+  check(S.parseQuerySync('3个人100块', D.dishes).modes.singlesOnly === false, '特色模式不误报');
+  // 控件值 + 冲突检测
+  const qCtrl = S.parseQuerySync({ text: '3个人', people: 3, dining: 'dineIn', orderMode: 'together' }, D.dishes);
+  check(qCtrl.dining === 'dineIn' && qCtrl.sources.dining === 'control', '控件选堂食生效');
+  check(qCtrl.orderMode === 'together' && qCtrl.sources.orderMode === 'control', '控件选合单生效');
+  const qConflict = S.parseQuerySync({ text: '外送，各点各的', dining: 'dineIn', orderMode: 'together' }, D.dishes);
+  check(qConflict.dining === 'delivery', '冲突时文本赢（外送 vs 堂食）');
+  check(qConflict.conflicts.some(c => c.field === 'dining'), '堂食/外送冲突要进 conflicts');
+  check(qConflict.conflicts.some(c => c.field === 'orderMode'), '点餐模式冲突要进 conflicts');
+  check(qConflict.resolved && qConflict.resolved.dining === 'delivery', 'resolved 给实际生效值');
+  // 菜品级排除：与忌口是两件事
+  const coke = D.dishes.filter(d => d.ok === true && d.name === '可乐')[0];
+  const qEx = S.parseQuerySync('2个人，不要可乐', D.dishes);
+  check(qEx.exclude.indexOf(coke.code) >= 0, '「不要可乐」应进 exclude（菜品级）');
+  check(qEx.avoid.length === 0, '「不要可乐」不是忌口');
+  // 套餐拆开：形态①只要几样 + 形态②整份拆开
+  // 选一个「整个名字都能被解析正则认出 + 至少两个子项对得上真实菜品」的套餐
+  const splitCombo = D.dishes.filter(d => d.role === 'combo' && d.parts && d.parts.length &&
+    /^[\u4e00-\u9fa5A-Za-z0-9]{2,12}?(?:套餐|组合|桶|分享餐|双人餐|多人餐)$/.test(d.name) &&
+    d.parts.filter(p => D.dishes.some(x => x.code === p.code)).length >= 2)[0];
+  if (splitCombo) {
+    const partNames = splitCombo.parts
+      .map(p => (D.dishes.filter(d => d.code === p.code)[0] || {}).name)
+      .filter(n => n && /^[\u4e00-\u9fa5A-Za-z0-9]+$/.test(n));
+    const qWhole = S.parseQuerySync('把' + splitCombo.name + '拆开单点', D.dishes);
+    check(qWhole.exclude.indexOf(splitCombo.code) >= 0, '整份拆开：原套餐应被排除');
+    check(partNames.every(n => qWhole.wanted.indexOf(n) >= 0), '整份拆开：子项应全部进 wanted');
+    check(Object.keys(qWhole.wantedMeta).length >= partNames.length, '整份拆开：子项都带 fromCombo 标记');
+    const qPart = S.parseQuerySync(splitCombo.name + '里只要' + partNames[0] + '和' + partNames[1], D.dishes);
+    check(qPart.exclude.indexOf(splitCombo.code) >= 0, '点套餐部分子项：父套餐应排除');
+    check(qPart.wanted.indexOf(partNames[0]) >= 0 && qPart.wanted.indexOf(partNames[1]) >= 0, '只要 A、B：两项进 wanted');
+    check(qPart.wanted.length === 2, '只要 A、B：不多带其他子项');
+    check((qPart.wantedMeta[partNames[0]] || {}).fromCombo === splitCombo.name, '子项应标记从哪个套餐拆出');
+    console.log(`   套餐拆开：「${splitCombo.name}」→ 只要 ${partNames[0]}+${partNames[1]}（父套餐已排除，按单点计入）`);
+    // 拆开后的子项要真的进方案，且文案说明不享受组合价
+    const rpSplit = await S.recommendPlans('2个人，120块，' + splitCombo.name + '里只要' + partNames[0] + '和' + partNames[1]);
+    const hasPart = rpSplit[0].items.some(i => i.name === partNames[0]);
+    check(hasPart, '拆出的子项应出现在方案里');
+    check(rpSplit[0].items.every(i => i.name !== splitCombo.name), '父套餐不应再以整份出现');
+    check((rpSplit[0].why || '').indexOf('按单点计入') >= 0, '方案文案应说明子项按单点计入');
+  } else { check(false, '数据里应至少有一个可拆的套餐（名字以套餐/双人餐等结尾且子项可解析）'); }
+  // 方案层：新模式标记 + 候选池过滤
+  const rpSingle = await S.recommendPlans('2个人，80块，哥有钱就喜欢单点');
+  check(rpSingle[0].modes && rpSingle[0].modes.singlesOnly === true, '方案应带 singlesOnly 标记');
+  check(rpSingle[0].items.every(i => i.role !== 'combo' && !/(套餐|组合|桶|分享餐|件套)/.test(i.name)),
+    '单点畅吃方案不应含任何套餐/套装');
+  const rpLate = await S.recommendPlans('1个人，50块，宵夜模式');
+  check(rpLate[0].modes && rpLate[0].modes.lateNight === true, '方案应带 lateNight 标记');
+  const rpDining = await S.recommendPlans('2个人，100块，外送');
+  check(rpDining[0].dining === 'delivery' && (rpDining[0].diningLabel || '').indexOf('外送') >= 0, '方案应带 dining 与中文标签');
+  check(rpDining[0].orderMode === 'split', '方案应带 orderMode（默认各自点）');
+  // assignOrders：合单模式（一人点完所有人）
+  const ap2 = await S.recommendPlans('3个人，100块');
+  const tg = await S.assignOrders(ap2[0].planId, { members: ['甲', '乙', '丙'], orderMode: 'together' });
+  check(tg.orderMode === 'together', '合单模式 orderMode=together');
+  check(tg.members.length === 3 && tg.members.every(m => m.share === true), '合单模式成员为人均份额');
+  const sumShare = tg.members.reduce((s, m) => s + m.payAfterCoupon, 0);
+  check(Math.abs(sumShare - tg.totals.splitPayEstimate) < 0.005, `合单模式 Σ人均 === 全单应付（${sumShare} vs ${tg.totals.splitPayEstimate}）`);
+  check(tg.combined.actual === true, '合单模式 combined 即实际结果');
+  check(tg.notes.some(n => n.indexOf('一人点完所有人') >= 0), '合单模式必须说明这是一张合单');
+  check(tg.comparison.verdict.indexOf('省事模式') === 0, '合单模式结论应点明「省事模式」');
+  console.log(`   合单：${tg.comparison.verdict}`);
+  // dining 透传与 notes
+  const tgD = await S.assignOrders(ap2[0].planId, { members: ['甲', '乙'], orderMode: 'together', dining: 'delivery' });
+  check(tgD.dining === 'delivery' && tgD.notes.some(n => n.indexOf('orderType=2') >= 0), '外送合单 note 应提 orderType=2');
+  const tgI = await S.assignOrders(ap2[0].planId, { members: ['甲', '乙'], orderMode: 'together', dining: 'dineIn' });
+  check(tgI.notes.some(n => n.indexOf('orderType=1') >= 0), '堂食合单 note 应提 orderType=1');
+  // couponLedger：券账本
+  const couponTotal = (D.coupons || []).filter(c => c && c.title && c.title.indexOf('###') !== 0).length;
+  const lg = await S.couponLedger(ap2[0].planId, { members: ['甲', '乙', '丙'], useCoupons: true });
+  check(lg.ledger.rows.length === couponTotal, `账本应覆盖每一张券（${couponTotal}）`);
+  check(lg.ledger.rows.every(r => ['used', 'skipped', 'unavailable', 'no-benefit', 'off'].indexOf(r.status) >= 0), '每行必须有合法状态');
+  check(lg.ledger.rows.every(r => r.type && r.typeLabel), '每行必须带券类型与中文标签');
+  check(lg.ledger.stats.used === lg.ledger.rows.filter(r => r.status === 'used').length, 'stats.used 与行数据一致');
+  check(lg.ledger.stats.total === couponTotal, 'stats.total 与券数一致');
+  check(lg.ledger.stats.estimatedCutTotal === lg.ledger.rows.filter(r => r.status === 'used').reduce((s, r) => s + r.estimatedCut, 0),
+    'stats.estimatedCutTotal 只累计已用的券');
+  check(lg.ledger.notes.some(n => n.indexOf('query-store-coupons') >= 0), '账本必须说明堂食/外送判断依据与官方真源的差距');
+  check(lg.ledger.notes.some(n => n.indexOf('available-coupons') >= 0), '账本必须说明券收益为何只是估算');
+  const lgOff = await S.couponLedger(ap2[0].planId, { members: ['甲', '乙'], useCoupons: false });
+  check(lgOff.ledger.rows.every(r => r.status === 'off'), '关掉用券后账本全部标 off');
+  try { await S.couponLedger('plan-x-999', {}); check(false, 'couponLedger 未知 planId 应报错'); }
+  catch (e) { check(e.code === 'NO_PLAN', 'couponLedger 未知 planId 错误码'); }
+  console.log(`   券账本：${lg.ledger.rows.map(r => `${r.title}[${r.typeLabel}/${r.status}/¥${r.estimatedCut}]`).join(' | ')}`);
+
   console.log('='.repeat(78));
   console.log(fail === 0 ? `全部通过 ✓（${pass} 项断言）` : `失败 ${fail} 项 / 通过 ${pass} 项`);
   process.exit(fail === 0 ? 0 : 1);

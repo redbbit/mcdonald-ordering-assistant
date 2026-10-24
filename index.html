@@ -99,7 +99,12 @@
             <div class="assign-block">
               <div class="assign-head"><div><span class="section-kicker">SPLIT ORDERS · COUPONS</span><h4 id="assignTitle">多人拆单 · 分人用券</h4></div></div>
               <p class="assign-intro">把选中的方案拆成每人一张小单、各自用券，并与「合单用一张券」对比。官方 available-coupons 不返回券 code，券收益按券面规则估算，恒为预演值；每单最多用 1 张券（官方未提供叠加规则）。</p>
-              <div class="assign-controls"><label class="assign-toggle"><input type="checkbox" id="assignUseCoupons" checked><span>尝试分人用优惠券</span></label><button type="button" class="primary-small" id="runAssign">拆单并用券</button></div>
+              <div class="assign-controls">
+                <label class="assign-toggle"><input type="checkbox" id="assignUseCoupons" checked><span>尝试分人用优惠券</span></label>
+                <label>点餐方式<select id="assignOrderMode"><option value="split">各自点（各付各）</option><option value="together">一人点完所有人（省事）</option></select></label>
+                <label>用餐方式<select id="assignDining"><option value="">未说明</option><option value="dineIn">到店 / 堂食</option><option value="delivery">外送 / 麦乐送</option></select></label>
+                <button type="button" class="primary-small" id="runAssign">拆单并用券</button>
+              </div>
               <div class="assign-result" id="assignResult" hidden aria-live="polite"></div>
             </div>
           </section>
