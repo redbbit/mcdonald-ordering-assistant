@@ -6,14 +6,21 @@
 > 「我想要套餐里的某部分、不想要另一部分，于是考虑把想要的子项单点，哪怕不如整套餐划算；最终方案里单点哪些、套餐哪些，要同时看价格、营养、口味。」
 > 引擎侧四件事全部做完（子项偏好建模 / 混合方案生成 / 多维权衡 / 测试），**前端 UI 是你的主战场**，字段契约在第二节，必须接线项打了 🔴。
 
-**本消息附件清单**（`mcd-advisor-delta4.zip`，全是本轮改动文件）：
+**本消息附件清单**（`mcd-advisor-delta78.zip`，**第 7 + 8 两轮合并**，共 13 个文件）：
+
+> ⚠️ 如果你没收到过第 7 轮交接（拆单 2.0：各自点/一人代点 · 堂食外送 · 券账本 · 特色模式），**这一包就是补给你的**——先读 `MESSAGE_TO_GPT_7.md` 再读本消息，第 8 轮的前端任务是叠在第 7 轮基础上的。`engine.js`/`service.js` 是两轮合并后的最新版（以本包为准）。
 
 | 文件 | 为什么发 |
 |---|---|
-| `engine.js` | 子项偏好 + 混合方案 + 四维对比 + 权重的全部实现（你只读，别改） |
-| `service.js` | 契约层：parseQuery 的 `itemPrefs`、plan 的 `sourceType/mixSummary/tradeoffExplanation/comboCompare/weights` |
-| `tools/test_engine.js` / `tools/test_service.js` | 新增断言（解析质量 / 混合候选 / 权重翻转 / 不改配边界 / 离线 simulated） |
-| `MESSAGE_TO_GPT_8.md` | 本消息 |
+| `MESSAGE_TO_GPT_7.md` | 第 7 轮主交接（拆单 2.0 契约）——没收过就先读它 |
+| `MESSAGE_TO_GPT_8.md` | 本消息（第 8 轮：子项偏好 + 混合方案 + 四维权衡） |
+| `app.js` / `index.html` / `style.css` | **你主场**：第 7 轮前端三件套当前版本，第 8 轮 UI 的工作基座 |
+| `engine.js` | 子项偏好 + 混合方案 + 四维对比 + 权重（你只读，别改） |
+| `service.js` | 契约层：拆单 2.0 + itemPrefs / sourceType / mixSummary / tradeoffExplanation / comboCompare / weights |
+| `server.py` / `lib/data_adapter.js` | 在线链路（beCode / orderType / store-coupons） |
+| `SCREENPLAY.md` | 录屏分镜，第 4 段多人拆单是主战场 |
+| `tools/test_assign_ui.js` | 渲染回归测试（13 项），你改 app.js 后跑它 |
+| `tools/test_engine.js` / `tools/test_service.js` | 第 8 轮新增断言（解析质量 / 混合候选 / 权重翻转 / 不改配边界 / plan 契约） |
 
 ---
 
