@@ -64,13 +64,49 @@ function commentedMentions(s, re) {
   }
   return hits;
 }
+/**
+ * 联网检查的口径在「双模式」上线后变了：
+ *
+ *   旧口径：见 fetch() 就判违规 —— 那时是纯离线单模式，运行时确实零网络。
+ *   新口径：**不许连外网，但允许连本机服务**（双模式要靠它真调 MCP）。
+ *
+ * 为什么不干脆放开：浏览器一旦能连外网，就等于开了可以把数据送出去的口子；
+ * 而本机 127.0.0.1 那个口子只通向持 Token 的本地进程，Token 本身从不下发到浏览器。
+ * 所以真正的红线没变，只是从「禁止联网」收窄成「禁止外部域名」。
+ */
+const LOCAL_HOSTS = ['127.0.0.1', 'localhost', '[::1]'];
+const EXTERNAL_SCHEME = /https?:\/\/([^\s"'()<>[\]]+)/gi;
+
+function hostOfUrl(u) {
+  try { return new URL(u).hostname; } catch (e) { return (u.split('/')[0] || '').split(':')[0]; }
+}
+function isExternalHost(host) {
+  if (!host) return false;
+  if (LOCAL_HOSTS.indexOf(host) >= 0) return false;
+  return !hostAllowed(host);        // 图片服务白名单（支持 *.mcd.cn 通配）
+}
+
+/**
+ * 扫一段代码里出现的外部域名。
+ * 跳过 xmlns 命名空间——那是 XML 的 Schema 标识字符串，不是网络请求，
+ * 早期版本因此误报过 www.w3.org。
+ */
+function externalHostsIn(s) {
+  const hosts = [];
+  for (const m of String(s).matchAll(EXTERNAL_SCHEME)) {
+    const pre = s.slice(Math.max(0, m.index - 24), m.index);
+    if (/xmlns\s*=\s*["']?$/.test(pre)) continue;
+    const host = hostOfUrl(m[1]);
+    if (isExternalHost(host)) hosts.push(host);
+  }
+  return hosts;
+}
+
 const NET_PATTERNS = [
-  { re: /\bfetch\s*\(/, msg: '调用了 fetch()' },
-  { re: /XMLHttpRequest|ActiveXObject/, msg: '使用了 XHR' },
-  { re: /\bWebSocket\b|EventSource\s*\(/, msg: '使用了 WebSocket / EventSource' },
-  { re: /navigator\.sendBeacon|importScripts\s*\(/, msg: '使用了后台上报 / 动态脚本' },
   { re: /<script[^>]+src\s*=\s*["']https?:/i, msg: '引用了外部 CDN 脚本' },
-  { re: /<link[^>]+href\s*=\s*["']https?:/i, msg: '引用了外部 CDN 样式/字体' }
+  { re: /<link[^>]+href\s*=\s*["']https?:/i, msg: '引用了外部 CDN 样式/字体' },
+  { re: /\bWebSocket\b|EventSource\s*\(/, msg: '使用了 WebSocket / EventSource（本机服务用不上）' },
+  { re: /navigator\.sendBeacon|importScripts\s*\(/, msg: '使用了后台上报 / 动态脚本' }
 ];
 
 let fail = 0, warn = 0, pass = 0;
@@ -94,14 +130,18 @@ if (process.argv.includes('--selftest')) {
     { code: "/* 本项目不使用 create-order，也不会做真实支付 */", should: 'pass', re: SECRET_PATTERNS[0].re },
     { code: "headers: { Authorization: 'Bearer ' + token }", should: 'catch', re: SECRET_PATTERNS[2].re },
     { code: "Authorization: 'Bearer eyJhbGciOiJIUzI1NiJ9.x.y'", should: 'catch', re: SECRET_PATTERNS[3].re },
-    { code: "const r = await fetch('/api/menu')", should: 'catch', re: NET_PATTERNS[0].re },
+    // 双模式后 fetch('/api/...') 是允许的（连本机服务），这条用例的期望随之反转
+    { code: "const r = await fetch('/api/menu')", should: 'pass', judge: function (c) { return externalHostsIn(c).length > 0; } },
+    { code: "await fetch('http://127.0.0.1:8787/api/health')", should: 'pass', judge: function (c) { return externalHostsIn(c).length > 0; } },
+    { code: "await fetch('https://api.example.com/collect', {body: data})", should: 'catch', judge: function (c) { return externalHostsIn(c).length > 0; } },
     { code: "ws = new WebSocket('wss://x')", should: 'catch', re: NET_PATTERNS[2].re },
-    { code: "<script src=\"https://cdn.jsdelivr.net/npm/vue\"></script>", should: 'catch', re: NET_PATTERNS[4].re },
-    { code: "img.src = 'https://menu-img.mcd.cn/a.png'", should: 'pass', re: NET_PATTERNS[4].re }
+    { code: "<script src=\"https://cdn.jsdelivr.net/npm/vue\"></script>", should: 'catch', re: NET_PATTERNS[0].re },
+    { code: "img.src = 'https://menu-img.mcd.cn/a.png'", should: 'pass', judge: function (c) { return externalHostsIn(c).length > 0; } },
+    { code: 'xmlns="http://www.w3.org/2000/svg"', should: 'pass', judge: function (c) { return externalHostsIn(c).length > 0; } }
   ];
   let sf = 0;
   CASES.forEach(function (c) {
-    const inCode = c.re.test(stripComments(c.code));
+    const inCode = c.judge ? c.judge(stripComments(c.code)) : c.re.test(stripComments(c.code));
     const got = inCode ? 'catch' : 'pass';
     const good = got === c.should;
     if (!good) sf++;
@@ -152,17 +192,26 @@ for (const f of scanFiles) {
   if (!hit) ok(f + ' 干净');
 }
 
-/* ---------- ③ 离线能力 ---------- */
-console.log('\n[3] 离线红线：不得联网、不得引 CDN');
-for (const f of UI_FILES) {
+/* ---------- ③ 联网红线：允许本机服务，禁止外部域名 ---------- */
+console.log('\n[3] 联网红线：可连本机服务，绝不能连外网');
+const netTargets = Array.from(new Set(
+  UI_FILES.concat(scanFiles.filter(x => /\.js$/.test(x)))));
+for (const f of netTargets) {
   if (!fs.existsSync(path.join(root, f))) continue;
   const s = read(f);
   let hit = 0;
+
   for (const p of NET_PATTERNS) {
-    const m = s.match(new RegExp(p.re.source, 'gi'));
+    const m = stripComments(s).match(new RegExp(p.re.source, 'gi'));
     if (m) { bad(f, p.msg + ' ×' + m.length); hit++; }
   }
-  if (!hit) ok(f + ' 无联网能力');
+
+  const external = externalHostsIn(stripComments(s));
+  for (const host of Array.from(new Set(external))) {
+    bad(f, '出现了外部域名请求目标：' + host); hit++;
+  }
+
+  if (!hit) ok(f + ' 联网目标受限（本机服务 / 官方图床）');
 }
 
 /* ---------- ④ 图片：本地图存在 + 外链域名白名单 ---------- */
