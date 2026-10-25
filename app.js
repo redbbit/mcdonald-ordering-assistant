@@ -460,6 +460,50 @@
     });
   }
 
+  /* ================= 彩蛋：全场单点两级确认 =================
+   * 点「爷有钱 · 全场单点」先问一句「您确定单点吗」；
+   * 确定 → 「震撼全场，你是那个靓仔/靓女」，再点才把词条填进输入框；
+   * 不确定 → 直接取消，不填词条、不发请求。 */
+  var eggPendingText = '';
+  function isSingleOnlyChip(btn) {
+    return /全场单点/.test(btn.textContent || '');
+  }
+  function openEggChip(btn) {
+    eggPendingText = btn.getAttribute('data-hint-text') || '';
+    var dlg = $('eggDialog');
+    if (!dlg || typeof dlg.showModal !== 'function') {      // 兜底：没有弹层就照常填
+      if (eggPendingText) { els.request.value = eggPendingText; els.charCount.textContent = eggPendingText.length + ' / 500'; }
+      return;
+    }
+    $('eggEmoji').textContent = '🍟';
+    $('eggAsk').textContent = '先生 / 小姐，您确定单点吗？';
+    $('eggSub').textContent = '单点吃不到套餐的折扣，但每样都由您自己挑。';
+    $('eggYes').hidden = false;
+    $('eggNo').hidden = false;
+    $('eggOk').hidden = true;
+    dlg.removeAttribute('hidden');
+    if (!dlg.open) dlg.showModal();
+  }
+  function eggConfirm() {
+    $('eggEmoji').textContent = '🎉';
+    $('eggAsk').textContent = '震撼全场，你是那个靓仔 / 靓女！';
+    $('eggSub').textContent = '单点方案已经备好 —— 点「这就去点」，剩下的交给它。';
+    $('eggYes').hidden = true;
+    $('eggNo').hidden = true;
+    $('eggOk').hidden = false;
+    $('eggOk').focus();
+  }
+  function eggFinish(fill) {
+    var dlg = $('eggDialog');
+    if (dlg && typeof dlg.close === 'function' && dlg.open) dlg.close();
+    if (fill && eggPendingText) {
+      els.request.value = eggPendingText;
+      els.charCount.textContent = eggPendingText.length + ' / 500';
+      els.request.focus();
+    }
+    eggPendingText = '';
+  }
+
   function hintChipsHtml() {
     return PROMPT_EXAMPLES.map(function (ex) {
       return '<button type="button" class="suggestion-chip" data-hint-text="' + attr(ex.text) + '">' + esc(ex.label) + '</button>';
@@ -1167,6 +1211,11 @@
       runRecommendation(query, { scroll: false, prefUpdate: true });
     });
     /* 引导页（第 10 轮）：右上角入口 + 关闭（遮罩点击 / ESC / 按钮） */
+    if ($('eggYes')) $('eggYes').addEventListener('click', eggConfirm);
+    if ($('eggNo')) $('eggNo').addEventListener('click', function () { eggFinish(false); });
+    if ($('eggOk')) $('eggOk').addEventListener('click', function () { eggFinish(true); });
+    var eggDlg = $('eggDialog');
+    if (eggDlg) eggDlg.addEventListener('click', function (event) { if (event.target === eggDlg) eggFinish(false); });
     var modeBtn = $('modeSwitch');
     if (modeBtn) modeBtn.addEventListener('click', function () {
       if (currentMode() === 'online') { connectOnline(); return; }
@@ -1199,6 +1248,7 @@
     $('guideChips').addEventListener('click', function (event) {
       var button = event.target.closest('[data-hint-text]');
       if (!button) return;
+      if (isSingleOnlyChip(button)) { openEggChip(button); return; }
       els.request.value = button.getAttribute('data-hint-text') || '';
       els.charCount.textContent = els.request.value.length + ' / 500';
       els.request.focus();
@@ -1206,6 +1256,7 @@
     $('guideExamples').addEventListener('click', function (event) {
       var button = event.target.closest('[data-hint-text]');
       if (!button) return;
+      if (isSingleOnlyChip(button)) { openEggChip(button); return; }
       els.request.value = button.getAttribute('data-hint-text') || '';
       els.charCount.textContent = els.request.value.length + ' / 500';
       closeGuide();

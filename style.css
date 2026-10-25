@@ -573,3 +573,19 @@ input[type="number"], input[type="text"] { min-height: 44px; }
   .mode-table { font-size:9px; }
   .mode-table th, .mode-table td { padding:5px 5px; }
 }
+
+/* ================= 彩蛋：全场单点确认（第 11 轮） ================= */
+.egg-dialog { width:min(400px,calc(100vw - 40px)); border:1px solid #e8ddcb; border-radius:18px; padding:22px 22px 18px; background:#fffaf0; color:var(--ink); text-align:center; box-shadow:0 26px 70px rgba(25,18,10,.42); }
+.egg-dialog::backdrop { background:rgba(28,20,14,.62); backdrop-filter:blur(3px); }
+.egg-emoji { margin:0 0 6px; font-size:30px; line-height:1; }
+.egg-ask { margin:0 0 8px; color:#493424; font-size:15px; font-weight:800; line-height:1.5; }
+.egg-sub { margin:0 0 16px; color:#8a7a63; font-size:10px; line-height:1.7; }
+.egg-actions { display:flex; flex-wrap:wrap; gap:8px; justify-content:center; }
+.egg-dialog button { padding:9px 16px; border-radius:99px; font:inherit; font-size:11px; font-weight:800; cursor:pointer; border:1px solid transparent; }
+.egg-yes { background:#d92b2b; color:#fff; }
+.egg-yes:hover { background:#c02525; }
+.egg-no { background:#fffdf8; color:#6b5b45; border-color:#e2d6c2; }
+.egg-no:hover { background:#f6efe1; }
+.egg-ok { background:#2f6b48; color:#fff; }
+.egg-ok:hover { background:#275a3c; }
+.egg-dialog button[hidden] { display:none !important; }
