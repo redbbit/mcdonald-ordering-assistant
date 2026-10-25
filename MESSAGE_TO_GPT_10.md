@@ -19,6 +19,27 @@
 2. **`resolved.maxCal` 缺口**：你的 `applyResolved` 里写了 `if (r.maxCal != null && $('maxCal')) $('maxCal').value = r.maxCal;`，但 service 的 `resolved` 对象没给 maxCal 字段，回填永远走空。已在 service.js 的 `q.resolved` 补上。
 3. **maxCal 入口防护**：`<input type="number">` 仍可能拿到 NaN/空串/0（粘贴、程序化赋值）。三入口（对象入参/ctrl/文本）统一 `isFinite && >0` 守卫——**0 或 NaN 不能变成「全部超标」的假上限**。`test_e2e_ui` 有 NaN/0/空串三条断言。
 
+## 二之三、修掉一个「整页卡死」的 bug（提交 `0cb6890`）
+
+**现象**：退出「投屏大字」后再点「使用说明」，页面像卡死——点哪都没反应，但刷新就好。
+
+**根因**：不在弹层逻辑，在 CSS。全局样式里有：
+
+```css
+.error-banner[hidden], [hidden] { display: none !important; }
+```
+
+而我关闭引导页时多此一举地加了 `hidden` 属性。`showModal()` **不会清除** `hidden`，于是：
+
+- `dialog.open === true` → 模态生效，`::backdrop` 铺满整屏，**拦截所有点击**
+- `[hidden]{display:none!important}` → 作者样式压过 UA 样式，**弹层不可见**
+
+结果就是「看不见的模态框挡住了一切」，用户看到的就是卡死。用 ESC 关闭不会留 `hidden`，所以只在点「开始使用」之后才复现——跟你观察到的顺序对得上。
+
+**修法**：原生 `<dialog>` 的显隐只由 `open` 属性决定，不该让 `hidden` 插一脚。已去掉 `closeGuide` 里的 `setAttribute('hidden')`，并在 `openGuide` 里防御性地先 `removeAttribute('hidden')`。
+
+**回归**：新增 `tools/test_guide_ui.js`（14 项），真实浏览器走一遍生命周期：自动弹出 → 点「开始使用」关闭并隐藏 → 投屏开/关 → 点「使用说明」**重开且可见**（这条就是防复现的断言）→ 再关闭 → ESC 关闭。未装 playwright 时自动跳过（跳过不算失败，不会卡住定时任务）。
+
 ## 二之二、本轮追加的两个新需求（提交 `420a9ef`）
 
 用户的原话需求：① 输入框加提示词，引导用户写出更规范的需求；② 加个引导页，说明网页能干嘛、怎么快速开始。
