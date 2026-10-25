@@ -528,3 +528,4 @@ input[type="number"], input[type="text"] { min-height: 44px; }
   .guide-body { grid-template-columns:1fr; max-height:62vh; padding:12px; }
   .guide-quickstart { grid-column:auto; }
 }
+.assign-scope { margin:6px 0 8px; padding:7px 10px; border-radius:7px; background:#f7f2e8; color:#6b5b45; font-size:10px; line-height:1.65; }

@@ -848,6 +848,11 @@
     $('assignResult').innerHTML =
       '<div class="assign-summary">' + statHtml + '</div>' +
       '<p class="assign-verdict">' + esc(cmp.verdict || '两条路子估算打平') + '</p>' +
+      (together ? '' :
+        '<p class="assign-scope">券来源：' + (ao.couponScope === 'per-member'
+          ? '每人登记了自己的券 → 各人用自己的券各下一单（共 ' + (ao.orders || []).length + ' 单）'
+          : '仅当前账号（MCP token 的号）→ 只能这一个号拆 ' + (ao.ordersWanted || (ao.orders || []).length) + ' 单。'
+            + '如果其他成员也有自己的券，本工具读不到他们的账号，需要登记或各自分开下单') + '</p>') +
       (together
         ? '<p class="assign-modehint">一人点完所有人：只下一单、用一张券，不存在「分单」——人均见上方统计，各自微信转账即可。</p>'
         : '') +

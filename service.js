@@ -1217,6 +1217,15 @@
          * 券绑在下单账号（号主）上、不跟人走，现实做法是号主用自己的号
          * 拆成 K 单、每单用掉一张券；不是「每人各下一单、各用各的券」。
          * 见 engine.buildOrdersByCouponCount 顶部口径说明。 */
+        /* 券的归属有两种真实情况，必须分开算：
+         *   ① 只登记「当前账号」的券（默认）：本工具能读到的只是 token 那个号的券，
+         *      所以只能是这个号一个人拆 K 单、每单用掉一张。
+         *   ② 登记「每人各自的券」（opt.couponsByMember）：别人也有自己的麦当劳账号和券，
+         *      但本工具读不到，只能由用户手填；填了就按「各人用自己的券各下一单」算——
+         *      这才是最常见、最省的做法。 */
+        var byMember = opt.couponsByMember || null;
+        core.couponScope = byMember ? 'per-member' : 'single-account';
+
         var worthwhile = 0;
         eligible.forEach(function (c) {
           var r0 = E.parseCouponRule(c.title || c.name || '');
@@ -1242,9 +1251,38 @@
           core.built = E.buildSubOrders(planItems, members, owners);
           core.splitSubtotal = round(core.orders.reduce(function (s, o) { return s + o.subtotal; }, 0));
         }
-        core.couponResult = { totalCut: 0 };
-        if (eligible.length) core.couponResult = E.optimizeCoupons(core.orders, eligible, DISHES);
-        core.couponsUsedCount = core.orders.filter(function (o) { return o.coupon; }).length;
+        if (byMember) {
+          /* 每人用自己的券：按人拆单，各自在自己券池里挑最划算的一张 */
+          core.built = E.buildSubOrders(planItems, members, owners);
+          var memberCut = 0;
+          core.orders = core.built.subOrders.map(function (s0, idx) {
+            var pool = byMember[members[idx].name] || [];
+            var best = null;
+            pool.forEach(function (c) {
+              var rule2 = E.parseCouponRule(c.title || c.name || '');
+              var dish2 = E.matchCouponDish(rule2, DISHES);
+              var cut2 = E.estimateCouponCut(rule2, dish2, s0.subtotal);
+              if (cut2 > 0 && (!best || cut2 > best.estimatedCut)) {
+                best = { title: c.title, code: c.code || c.id || null, estimatedCut: cut2, rule: rule2.kind };
+              }
+            });
+            if (best) memberCut += best.estimatedCut;
+            return {
+              index: s0.index, name: s0.name, items: s0.items, subtotal: s0.subtotal,
+              coupon: best,
+              payAfterCoupon: Math.max(0, round(s0.subtotal - (best ? best.estimatedCut : 0)))
+            };
+          });
+          core.splitSubtotal = core.built.total;
+          core.ordersWanted = members.length;
+          core.worthCount = core.orders.filter(function (o) { return o.coupon; }).length;
+          core.couponResult = { totalCut: round(memberCut) };
+          core.couponsUsedCount = core.worthCount;
+        } else {
+          core.couponResult = { totalCut: 0 };
+          if (eligible.length) core.couponResult = E.optimizeCoupons(core.orders, eligible, DISHES);
+          core.couponsUsedCount = core.orders.filter(function (o) { return o.coupon; }).length;
+        }
         // 合单参照：一整单用它能用的最好的那张券（同样只是估算）
         core.combinedCoupon = null; core.combinedCut = 0;
         eligible.forEach(function (c) {
@@ -1362,6 +1400,9 @@
           })
         };
         var notes = [
+          (core.couponScope === 'per-member'
+            ? '本轮按「每人各自用自己的券」计算：每个人用自己账号里的券各下一单（券由用户手动登记，本工具读不到别人账号）'
+            : '⚠️ 本轮只算「一个人用自己的账号拆单」这一种：本工具能读到的券全部属于当前 MCP token 的账号，读不到别人账号的券。如果其他人也有自己的券，请用 couponsByMember 登记，或各自用自己的券分开下单后合并结算'),
           '券属于下单账号（号主），不跟人走：只有号主能用自己的券下单，现实做法是「一个人用自己的账号拆成 ' + (orderMode === 'split' ? core.ordersWanted : 1) + ' 单」，每单用掉一张券；其他人把饭钱转给号主',
           '拆几单由「账号里有几张值得用的券」决定（本轮可用券 ' + (core.worthCount || 0) + ' 张 → 拆 ' + (orderMode === 'split' ? core.ordersWanted : 1) + ' 单），不是「每人各下一单」',
           '券收益为券面规则估算：官方 available-coupons 不返回券 code，无法代入 calculate-price 真实试算；领取与核销请在麦当劳 APP / 小程序完成',
@@ -1440,6 +1481,7 @@
             };
           });
           result.orders = orders;
+          result.couponScope = core.couponScope;
           result.ordersWanted = core.ordersWanted;
           result.worthCount = core.worthCount;
           result.couponsUsed = orders.filter(function (o) { return o.coupon; })
@@ -1462,7 +1504,7 @@
             cheaper: diff < -0.005 ? 'split' : (diff > 0.005 ? 'combined' : 'tie'),
             diff: diff,
             verdict: diff < -0.005
-              ? '拆成 ' + core.ordersWanted + ' 单' + (core.couponResult.totalCut > 0 ? '（用上 ' + core.couponsUsedCount + ' 张券）' : '（无可用券）') + '，估算省 ' + yuan(-diff) + '（配送费' + (splitDelivery ? '已按官方返回计入' : '未计入') + '）'
+              ? '拆成 ' + core.ordersWanted + ' 单' + (core.couponResult.totalCut > 0 ? '，用上 ' + core.couponsUsedCount + ' 张券共省 ' + yuan(core.couponResult.totalCut) : '（无可用券）') + '；比合单' + (diff < 0 ? '多省 ' : '多付 ') + yuan(Math.abs(diff)) + '（配送费' + (splitDelivery ? '已按官方返回计入' : '未计入') + '）'
               : (diff > 0.005
                 ? '合单更划算：拆单估算多付 ' + yuan(diff) + (splitDelivery ? '（含各单配送费）' : '')
                 : '两条路子估算打平')
