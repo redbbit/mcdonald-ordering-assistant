@@ -105,11 +105,12 @@
       weights: null,         // 四维权衡 {price,kcal,protein,taste}：目标解析 + UI 滑块注入
       dining: null,          // 'dineIn' 到店/堂食 · 'delivery' 外送/麦乐送 · null 未说明
       orderMode: null,       // 'split' 各自点 · 'together' 一人点完所有人 · null 默认合单
+      maxCal: null,          // 全单热量上限：「不超过800大卡」——null 不限制
       modes: { singlesOnly: false, lateNight: false },   // 单点畅吃 / 宵夜模式
       slot: null,
-      matched: { people: false, budget: false, goal: false, avoid: [] },
+      matched: { people: false, budget: false, goal: false, avoid: [], maxCal: false },
       conflicts: [],
-      sources: { people: 'default', budget: 'default', avoid: 'default', itemPrefs: 'default' },
+      sources: { people: 'default', budget: 'default', avoid: 'default', itemPrefs: 'default', maxCal: 'default' },
       resolved: null        // 实际生效值快照，UI 双向同步用
     };
     // 控件原值（冲突检测的对照组）；只在传入对象时存在
@@ -124,6 +125,7 @@
         avoid: input.avoid ? input.avoid.slice() : null,
         dining: input.dining || null,
         orderMode: input.orderMode || null,
+        maxCal: input.maxCal != null ? +input.maxCal : null,
         exclude: input.exclude ? input.exclude.slice() : null,
         itemPrefs: input.itemPrefs ? input.itemPrefs.slice() : null,
         weights: input.weights || null
@@ -137,19 +139,22 @@
       if (input.taste) q.taste = input.taste.slice();
       if (input.dining) q.dining = input.dining;
       if (input.orderMode) q.orderMode = input.orderMode;
+      if (input.maxCal != null) q.maxCal = input.maxCal;
       if (input.exclude) q.exclude = input.exclude.slice();
       if (input.itemPrefs) q.itemPrefs = input.itemPrefs.slice();
       if (input.weights) q.weights = input.weights;
     }
 
-    /* 人数：阿拉伯数字 + 中文数字 */
-    var CN = { 一: 1, 两: 2, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
-    var m = /([0-9]+|[一二两三四五六七八九十])\s*(个人|人|位|位朋友|号人)/.exec(t);
+    /* 人数：阿拉伯数字 + 中文数字（含口语 俩=2/仨=3；「我们三个」的「个」也是量词） */
+    var CN = { 一: 1, 两: 2, 二: 2, 俩: 2, 三: 3, 仨: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+    var m = /([0-9]+|[一二两俩三仨四五六七八九十])\s*(?:个人|个|人|位|位朋友|号人)/.exec(t);
     if (m) {
       q.people = CN[m[1]] || parseInt(m[1], 10);
       q.matched.people = true;
       q.sources.people = 'text';
     } else if (/(双人|两个人)/.test(t)) { q.people = 2; q.matched.people = true; q.sources.people = 'text'; }
+    else if (/(?:咱|我们|咱们|大家)?俩/.test(t)) { q.people = 2; q.matched.people = true; q.sources.people = 'text'; }
+    else if (/(?:咱|我们|咱们|大家)?仨/.test(t)) { q.people = 3; q.matched.people = true; q.sources.people = 'text'; }
     else if (/单人|一个人|自己吃/.test(t)) { q.people = 1; q.matched.people = true; q.sources.people = 'text'; }
     q.people = Math.max(1, Math.min(12, q.people || 1));
     if (q.sources.people === 'default' && ctrl && ctrl.people) q.sources.people = 'control';
@@ -173,6 +178,12 @@
       }
     }
     if (q.budgetMax != null) { q.budgetMax = Math.max(q.budgetMin, q.budgetMax); q.unlimited = false; }
+
+    /* 热量上限：「不超过800大卡」「800大卡以内」「控制在600千卡」。
+     * 只认明确数字；「低卡」交给 goal 解析（normGoal），不在这里编默认值。 */
+    var mc = /(?:不超过|最多|以内|控制在|限制在)?\s*([0-9]{2,4})\s*(?:大卡|千卡|kcal|卡)/i.exec(t);
+    if (mc) { q.maxCal = +mc[1]; q.matched.maxCal = true; q.sources.maxCal = 'text'; }
+    else if (ctrl && ctrl.maxCal != null) { q.maxCal = ctrl.maxCal; q.sources.maxCal = 'control'; }
 
     /* 目标：整句留给用户，量化由引擎 normGoal 负责 */
     if (t) q.goal = q.goal || t;
@@ -437,22 +448,26 @@
             ((E.ORDER_MODE_LABEL || {})[ctrl.orderMode] || ctrl.orderMode) + '」，已按输入框计算'
         });
       }
-      // 忌口 vs 点名菜：忌口赢，但必须告诉用户谁被挡了
-      if (q.avoid.length && q.wanted.length && dishes && dishes.length) {
-        q.wanted.slice().forEach(function (name) {
-          var d = null;
-          dishes.forEach(function (x) { if (x.name === name) d = x; });
-          if (!d) return;
-          var blocked = q.avoid.filter(function (v) { return (d.Avoid || []).indexOf(v) >= 0; });
-          if (blocked.length) {
-            q.conflicts.push({
-              field: 'avoid', text: name, control: blocked.join('、'), resolved: 'dropped',
-              note: '你说想吃「' + name + '」，但它含 ' + blocked.join('、') + '，与忌口冲突，已不加入方案'
-            });
-            q.wanted.splice(q.wanted.indexOf(name), 1);
-          }
-        });
-      }
+    }
+
+    /* 忌口 vs 点名菜：忌口赢，安全优先，但必须告诉用户谁被挡了——不静默丢弃。
+     * 官方 Avoid 标签驱动（麦辣鸡腿汉堡 Avoid=['辣','鸡肉']，官方数据 106/122 菜有标注），不猜成分。
+     * 不依赖 ctrl：纯文本「不吃辣，想吃麦辣鸡腿堡」同样要检测——
+     * 这个场景没有控件对照，以前整块被跳过，用户看到的就是「说了忌口还给我麦辣」。 */
+    if (q.avoid.length && q.wanted.length && dishes && dishes.length) {
+      q.wanted.slice().forEach(function (name) {
+        var d = null;
+        dishes.forEach(function (x) { if (x.name === name) d = x; });
+        if (!d) return;
+        var blocked = q.avoid.filter(function (v) { return (d.Avoid || []).indexOf(v) >= 0; });
+        if (blocked.length) {
+          q.conflicts.push({
+            field: 'avoid', text: name, control: blocked.join('、'), resolved: 'dropped',
+            note: '你说想吃「' + name + '」，但它含 ' + blocked.join('、') + '，与忌口冲突，已不加入方案'
+          });
+          q.wanted.splice(q.wanted.indexOf(name), 1);
+        }
+      });
     }
 
     q.resolved = {
@@ -861,6 +876,8 @@
 
         budgetMin: q.budgetMin, budgetMax: q.unlimited ? null : q.budgetMax,
         unlimited: !!q.unlimited,
+        maxCal: q.maxCal || null,
+        withinMaxCal: (q.maxCal != null && hasAnyKcal) ? round(nut.total.kcal, 0) <= q.maxCal : null,
         withinBudget: q.unlimited ? true : raw.total <= (q.budgetMax || 0) + 1e-6,
 
         totalCalories: hasAnyKcal ? round(nut.total.kcal, 0) : null,

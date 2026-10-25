@@ -111,6 +111,38 @@ console.log('='.repeat(78));
   check(wantPlans.every(p => p.items.some(i => /炸鸡/.test(i.name))),
     '「我要吃炸鸡」三版方案都必须含炸鸡，实得 ' + wantPlans.map(p => p.items.map(i => i.name).join('/')).join(' | '));
 
+  /* ---- 4c. 忌口 x 点名菜冲突 + 中文数字 + maxCal ---- */
+  // 忌口赢（安全优先），且不静默丢弃——纯文本也要检测（以前整块长在 ctrl 里被跳过）
+  const qAvoidWin = S.parseQuerySync('不吃辣，想吃麦辣鸡腿堡', D.dishes);
+  check(qAvoidWin.wanted.indexOf('麦辣鸡腿汉堡') < 0, '忌口赢：冲突菜要从 wanted 移除');
+  check(qAvoidWin.conflicts.length === 1 && qAvoidWin.conflicts[0].field === 'avoid',
+    '纯文本忌口x点名菜必须报 1 条 conflict，实得 ' + qAvoidWin.conflicts.length);
+  check(/含 辣/.test(qAvoidWin.conflicts[0].note), 'conflict 要说明撞了哪种忌口');
+  // 控件路径同样只报 1 条（不能因为既有逻辑+新逻辑重复报）
+  const qAvoidCtrl = S.parseQuerySync({ text: '想吃麦辣鸡腿堡', avoid: ['鸡肉'] }, D.dishes);
+  check(qAvoidCtrl.conflicts.length === 1, '控件路径也只报 1 条 conflict，实得 ' + qAvoidCtrl.conflicts.length);
+  // 无冲突不得误报
+  check(S.parseQuerySync('不吃香菜，想吃巨无霸', D.dishes).conflicts.length === 0, '无 Avoid 撞车不得报冲突');
+  check(S.parseQuerySync('不吃辣，100块', D.dishes).conflicts.length === 0, '没点名菜不得报冲突');
+  // 忌口赢之后端到端：三版都不能含被禁菜
+  const avoidWinPlans = await S.recommendPlans('不吃辣，想吃麦辣鸡腿堡');
+  check(avoidWinPlans.every(p => p.items.every(i => i.name.indexOf('麦辣鸡腿汉堡') < 0)),
+    '忌口赢后三版都不得含麦辣鸡腿汉堡');
+  // 中文数字：俩=2 仨=3（合体字句尾也要认）
+  check(S.parseQuerySync('俩个人', D.dishes).people === 2, '俩个人 = 2 人');
+  check(S.parseQuerySync('咱们俩', D.dishes).people === 2, '咱们俩 = 2 人');
+  check(S.parseQuerySync('仨人', D.dishes).people === 3, '仨人 = 3 人');
+  check(S.parseQuerySync('我们三个', D.dishes).people === 3, '我们三个 = 3 人');
+  check(S.parseQuerySync('两个人', D.dishes).people === 2, '回归：两个人 = 2 人');
+  // maxCal：文本 / 控件 / 未提及 / 端到端透传
+  check(S.parseQuerySync('2个人，不超过800大卡', D.dishes).maxCal === 800, 'maxCal 文本解析');
+  check(S.parseQuerySync({ text: '2个人', maxCal: 600 }, D.dishes).maxCal === 600, 'maxCal 控件透传');
+  check(S.parseQuerySync('2个人', D.dishes).maxCal === null, '未提及 maxCal = null');
+  const calPlans = await S.recommendPlans('2个人，100块以内，不超过800大卡');
+  check(calPlans.every(p => p.maxCal === 800), 'plan.maxCal 透传');
+  check(calPlans.every(p => p.withinMaxCal === false || p.withinMaxCal === null),
+    'withinMaxCal 不得谎报达标（超标必须 false）');
+
   /* ---- 5. recommendPlans 固定三版 ---- */
   const qs = [
     { text: '3个人聚餐，150以内，随便吃' },
