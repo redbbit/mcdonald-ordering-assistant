@@ -1308,6 +1308,48 @@ function summarizeMix(plan, prefIndex) {
   };
 }
 
+/* ------------------------------------------------ 按券拆单（订单 = 支付单元）
+   ⚠️ 口径纠正（用户实测反馈）：
+     · 券是**绑在下单账号（号主）**上的，不跟人走；只有号主能用自己的券下单。
+     · 所以现实不是「每人各下一单、各用各的券」，而是
+       **一个人用自己的账号拆成 K 单，每单用掉账号里的 1 张券**。
+     · 人不该决定拆几单；**券的个数**才决定能拆几单。
+   这里把「这桌的菜」按 K 单做均衡装箱（大件优先 + 最小负载优先），
+   让各单金额尽量均匀，更容易吃满满减门槛。 */
+function buildOrdersByCouponCount(items, k) {
+  items = items || [];
+  if (!items.length) return { orders: [], total: 0 };
+  var n = Math.max(1, Math.min(k || 1, items.length));
+  var lines = items.map(function (it) {
+    var price = parseFloat(it.price) || 0;
+    var qty = parseInt(it.qty, 10) || 1;
+    return {
+      name: it.name, code: it.code, qty: qty, unitPrice: price,
+      lineTotal: Math.round(price * qty * 100) / 100,
+      cents: Math.round(price * qty * 100)
+    };
+  }).sort(function (a, b) { return b.cents - a.cents; });
+
+  var buckets = [];
+  for (var i = 0; i < n; i++) buckets.push({ index: i, name: '第 ' + (i + 1) + ' 单', items: [], cents: 0 });
+  lines.forEach(function (ln) {
+    buckets.sort(function (a, b) { return a.cents - b.cents; });   // 最小负载优先
+    buckets[0].items.push(ln);
+    buckets[0].cents += ln.cents;
+  });
+  buckets.sort(function (a, b) { return a.index - b.index; });
+  var totalCents = buckets.reduce(function (s, b) { return s + b.cents; }, 0);
+  return {
+    orders: buckets.map(function (b) {
+      return {
+        index: b.index, name: b.name, items: b.items,
+        subtotal: Math.round(b.cents) / 100
+      };
+    }),
+    total: Math.round(totalCents) / 100
+  };
+}
+
 /* ------------------------------------------------ 多人拆单（问题一）
    把「总需求清单」按成员拆成各自的小单，再给每张小额单配一张券。
    约束与假设（全部对用户明示）：
@@ -1409,7 +1451,8 @@ var API = {
   DINING_LABEL: DINING_LABEL, COUPON_TYPE_LABEL: COUPON_TYPE_LABEL,
   parseOrderMode: parseOrderMode, ORDER_MODE_LABEL: ORDER_MODE_LABEL,
   parseModes: parseModes, MODE_LABEL: MODE_LABEL,
-  buildSubOrders: buildSubOrders, optimizeCoupons: optimizeCoupons,
+  buildSubOrders: buildSubOrders, buildOrdersByCouponCount: buildOrdersByCouponCount,
+  optimizeCoupons: optimizeCoupons,
   RICE_BOWL: RICE_BOWL, WALK_KCAL: WALK_KCAL, WALK_SPEED: WALK_SPEED
 };
 

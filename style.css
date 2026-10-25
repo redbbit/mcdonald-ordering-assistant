@@ -498,3 +498,9 @@ input[type="number"], input[type="text"] { min-height: 44px; }
 .guide-missing[hidden] { display: none; }
 .missing-kicker { font-size: 10px; color: var(--green); font-weight: 800; }
 .hint-gap { background: #f2f8f4; border-color: #b9d8c7; color: #2f5c46; }
+
+/* 订单区 / 人区（第 10 轮修正：券属于下单账号，订单才是用券单元） */
+.assign-orders, .assign-people { margin-top: 10px; }
+.assign-orders h4, .assign-people h4 { margin: 0 0 7px; font-size: 11px; color: var(--brown); }
+.assign-people h4 { color: var(--muted); font-weight: 700; }
+.assign-modehint { margin: 6px 0 2px; padding: 8px 10px; border-radius: 8px; background: #f4f0e8; color: #594832; font-size: 10px; line-height: 1.7; }

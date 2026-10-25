@@ -68,9 +68,13 @@ var cases = {
     totals: { splitSubtotal: 89.5, estimatedCouponCut: 12, splitDeliveryFees: null, splitPayEstimate: 77.5 },
     combined: { total: 89.5, coupon: { title: '满 70 减 12 券', estimatedCut: 12 }, payEstimate: 77.5 },
     comparison: { verdict: '拆单各用券，估算省 ¥12' },
+    orders: [
+      { index: 0, name: '第 1 单', subtotal: 45, items: [{ name: 'A', qty: 1 }], coupon: { title: '满 40 减 8 券', estimatedCut: 8 }, payAfterCoupon: 37, real: { price: 37, deliveryPrice: null } },
+      { index: 1, name: '第 2 单', subtotal: 44.5, items: [{ name: 'B', qty: 1 }], coupon: null, payAfterCoupon: 44.5, real: null }
+    ],
     members: [
-      { index: 0, name: '小红', subtotal: 45, coupon: { title: '满 40 减 8 券', estimatedCut: 8 }, payAfterCoupon: 37, real: null },
-      { index: 1, name: '小明', subtotal: 44.5, coupon: null, payAfterCoupon: 44.5, real: { price: 44.5, deliveryPrice: null } }
+      { index: 0, name: '小红', subtotal: 45, share: true, coupon: null, payAfterCoupon: 40.9 },
+      { index: 1, name: '小明', subtotal: 44.5, share: true, coupon: null, payAfterCoupon: 40.4 }
     ],
     notes: ['测试备注'],
     ledger: {
@@ -125,11 +129,14 @@ Object.keys(cases).forEach(function (name) {
       checks.push([html.indexOf('已用') >= 0 && html.indexOf('未排上') >= 0 && html.indexOf('不适用') >= 0 && html.indexOf('无收益') >= 0, '四种账本状态']);
       checks.push([html.indexOf('query-store-coupons 未调用') >= 0, '账本备注合并']);
       checks.push([html.indexOf('¥77.5') >= 0 || html.indexOf('¥77.50') >= 0, '合单估付金额']);
-      checks.push([html.indexOf('小红') >= 0 && html.indexOf('MCP 实算') >= 0, '成员卡 + MCP 实算']);
+      checks.push([html.indexOf('按单用券') >= 0 && html.indexOf('第 1 单') >= 0, '订单卡（券挂订单）']);
+      checks.push([html.indexOf('MCP 实算') >= 0, '订单卡 + MCP 实算']);
+      checks.push([html.indexOf('内部转账参考') >= 0 && html.indexOf('小红') >= 0, '人视图只做内部转账']);
     } else if (name === 'together') {
       checks.push([html.indexOf('整单小计') >= 0, 'together 统计卡标签']);
       checks.push([html.indexOf('人均') >= 0, '人均卡']);
-      checks.push([html.indexOf('全单一张券（见下方）') >= 0, '合单券提示']);
+      checks.push([html.indexOf('不存在「分单」') >= 0, '合单模式说明']);
+      checks.push([html.indexOf('assign-people') < 0, '一人点完所有人 → 不显示按人分账']);
       checks.push([html.indexOf('人均估付') >= 0 && html.indexOf('¥28.83') >= 0, '人均区间']);
       checks.push([html.indexOf('合单') >= 0, '账本 usedBy 合单']);
     } else {

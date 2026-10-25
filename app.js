@@ -749,20 +749,29 @@
     var combined = ao.combined || {};
     var cmp = ao.comparison || {};
     var together = ao.orderMode === 'together';
-    var cards = (ao.members || []).map(function (m) {
-      // 合单模式（一人点完所有人）：每个人拿到的是人均份额，不是独立小单
-      if (together || m.share) {
-        return '<div class="assign-card"><strong>' + money(m.payAfterCoupon) + '</strong><span>' + esc(m.name) + ' · 人均</span><span class="assign-coupon none">全单一张券（见下方）</span><span class="assign-pay">分摊 ' + money(m.subtotal) + '</span></div>';
-      }
-      var coupon = m.coupon;
-      var couponHtml = coupon
-        ? '<span class="assign-coupon">用「' + esc(coupon.title) + '」估省 ' + money(coupon.estimatedCut) + '</span>'
-        : '<span class="assign-coupon none">这张单没用券</span>';
-      var realHtml = m.real && typeof m.real.price === 'number'
-        ? '<span class="assign-real">MCP 实算 ' + money(m.real.price) + (m.real.deliveryPrice != null ? '（含配送 ' + money(m.real.deliveryPrice) + '）' : '') + '</span>'
-        : '';
-      return '<div class="assign-card"><strong>' + money(m.subtotal) + '</strong><span>' + esc(m.name) + '</span>' + couponHtml + '<span class="assign-pay">估付 ' + money(m.payAfterCoupon) + '</span>' + realHtml + '</div>';
-    }).join('');
+    /* ⚠️ 口径（用户实测 feedback）：券是绑在**下单账号**上的，不跟人走。
+     * 所以「第 N 单」才是用券单元，人只是内部转账的成本归属——两张卡必须分开显示，
+     * 不能再把券挂到「某人」身上（那等于宣称每个人都有号主的券）。
+     * 一人点完所有人（together）时根本不分单，就更不该显示按人分账。 */
+    var orders = ao.orders || [];
+    var ordersHtml = orders.length
+      ? '<section class="assign-orders"><h4>按单用券 · 每单最多一张</h4><div class="assign-cards">' + orders.map(function (o) {
+          var c = o.coupon
+            ? '<span class="assign-coupon">用「' + esc(o.coupon.title) + '」估省 ' + money(o.coupon.estimatedCut) + '</span>'
+            : '<span class="assign-coupon none">这一单没用券</span>';
+          var realHtml = o.real && typeof o.real.price === 'number'
+            ? '<span class="assign-real">MCP 实算 ' + money(o.real.price) + '</span>' : '';
+          return '<div class="assign-card"><strong>' + money(o.subtotal) + '</strong><span>' + esc(o.name) +
+            ' · ' + ((o.items || []).length) + ' 件</span>' + c +
+            '<span class="assign-pay">估付 ' + money(o.payAfterCoupon) + '</span>' + realHtml + '</div>';
+        }).join('') + '</div></section>'
+      : '';
+    var cards = (together || !(ao.members || []).length) ? '' :
+      '<section class="assign-people"><h4>内部转账参考 · 按人摊，与用券无关</h4><div class="assign-cards">' +
+      (ao.members || []).map(function (m) {
+        return '<div class="assign-card"><strong>' + money(m.payAfterCoupon) + '</strong><span>' + esc(m.name) +
+          '</span><span class="assign-coupon none">小计 ' + money(m.subtotal) + '（已摊券收益）</span></div>';
+      }).join('') + '</div></section>';
     var combinedLabel = combined.coupon ? '用「' + esc(combined.coupon.title) + '」估省 ' + money(combined.coupon.estimatedCut) : '无可用券';
     // 合单模式统计卡语义不同：没有「拆单」，只有整单和人均
     var sharesList = (ao.members || []).map(function (m) { return m.subtotal; })
@@ -778,7 +787,7 @@
         '<div class="assign-stat"><b>' + money(t.splitPayEstimate) + '</b><span>整单估付</span></div>' +
         '<div class="assign-stat"><b>' + perText + '</b><span>人均估付</span></div>'
       : '<div class="assign-stat"><b>' + money(t.splitSubtotal) + '</b><span>拆单小计合计</span></div>' +
-        '<div class="assign-stat"><b>' + money(t.estimatedCouponCut) + '</b><span>分人用券估省</span></div>' +
+        '<div class="assign-stat"><b>' + money(t.estimatedCouponCut) + '</b><span>按单用券估省</span></div>' +
         '<div class="assign-stat"><b>' + money(t.splitPayEstimate) + '</b><span>拆单估付合计</span></div>' +
         '<div class="assign-stat"><b>' + money(combined.payEstimate) + '</b><span>合单估付 · ' + combinedLabel + '</span></div>';
     // 券账本：每张券一行，说明用/没用/为什么
@@ -809,7 +818,11 @@
     $('assignResult').innerHTML =
       '<div class="assign-summary">' + statHtml + '</div>' +
       '<p class="assign-verdict">' + esc(cmp.verdict || '两条路子估算打平') + '</p>' +
-      '<div class="assign-cards">' + cards + '</div>' +
+      (together
+        ? '<p class="assign-modehint">一人点完所有人：只下一单、用一张券，不存在「分单」——人均见上方统计，各自微信转账即可。</p>'
+        : '') +
+      ordersHtml +
+      cards +
       ledgerHtml +
       (notes ? '<ul class="assign-notes">' + notes + '</ul>' : '');
   }

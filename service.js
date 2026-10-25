@@ -1213,9 +1213,28 @@
       /* ---- 两条路子各自的离线骨架 ---- */
       var core = { orderMode: orderMode };
       if (orderMode === 'split') {
+        /* ⚠️ 拆几单由「账号里有几张值得用的券」决定，不由人数决定。
+         * 券绑在下单账号（号主）上、不跟人走，现实做法是号主用自己的号
+         * 拆成 K 单、每单用掉一张券；不是「每人各下一单、各用各的券」。
+         * 见 engine.buildOrdersByCouponCount 顶部口径说明。 */
+        var worthwhile = 0;
+        eligible.forEach(function (c) {
+          var r0 = E.parseCouponRule(c.title || c.name || '');
+          var d0 = E.matchCouponDish(r0, DISHES);
+          if (E.estimateCouponCut(r0, d0, orderTotal) > 0) worthwhile++;
+        });
+        core.worthCount = worthwhile;
+        core.ordersWanted = Math.max(1, Math.min(worthwhile || 1, members.length));
+        /* 两个视图，各管一件事，别混：
+         *   ① core.orders = 支付单元（第 N 单）——**券挂在这里**，一单一张券
+         *   ② core.built  = 成本归属（每人一份）——**只用于内部转账**，不挂券
+         * 之前的做法是把券挂到「人」上，等于宣称「每个人都有号主的券」，这是错的。 */
+        core.orders = E.buildOrdersByCouponCount(planItems, core.ordersWanted).orders;
         core.built = E.buildSubOrders(planItems, members, owners);
         core.couponResult = { totalCut: 0 };
-        if (eligible.length) core.couponResult = E.optimizeCoupons(core.built.subOrders, eligible, DISHES);
+        if (eligible.length) core.couponResult = E.optimizeCoupons(core.orders, eligible, DISHES);
+        core.couponsUsedCount = core.orders.filter(function (o) { return o.coupon; }).length;
+        core.splitSubtotal = round(core.orders.reduce(function (s, o) { return s + o.subtotal; }, 0));
         // 合单参照：一整单用它能用的最好的那张券（同样只是估算）
         core.combinedCoupon = null; core.combinedCut = 0;
         eligible.forEach(function (c) {
@@ -1244,7 +1263,7 @@
       if (!SIMULATED && wantReal && ADAPTER && typeof ADAPTER.calculatePrice === 'function') {
         var calcOpt = { storeCode: DATA.store.code, dining: dining };
         if (orderMode === 'split') {
-          realJobs = core.built.subOrders.map(function (s) {
+          realJobs = core.orders.map(function (s) {
             return ADAPTER.calculatePrice(s.items.map(function (i) {
               return { code: i.code, qty: i.qty };
             }), calcOpt).catch(function (e) {
@@ -1264,9 +1283,9 @@
 
       /* ---------------- 券账本：每一张券一行账 ---------------- */
       function buildLedger() {
-        var usedByTitle = {};   // title -> { member, cut }
+        var usedByTitle = {};   // title -> { member: 第 N 单, cut }
         if (orderMode === 'split') {
-          core.built.subOrders.forEach(function (s) {
+          core.orders.forEach(function (s) {
             if (s.coupon) usedByTitle[s.coupon.title] = { member: s.name, cut: s.coupon.estimatedCut };
           });
         } else if (core.best) {
@@ -1333,6 +1352,8 @@
           })
         };
         var notes = [
+          '券属于下单账号（号主），不跟人走：只有号主能用自己的券下单，现实做法是「一个人用自己的账号拆成 ' + (orderMode === 'split' ? core.ordersWanted : 1) + ' 单」，每单用掉一张券；其他人把饭钱转给号主',
+          '拆几单由「账号里有几张值得用的券」决定（本轮可用券 ' + (core.worthCount || 0) + ' 张 → 拆 ' + (orderMode === 'split' ? core.ordersWanted : 1) + ' 单），不是「每人各下一单」',
           '券收益为券面规则估算：官方 available-coupons 不返回券 code，无法代入 calculate-price 真实试算；领取与核销请在麦当劳 APP / 小程序完成',
           '每单最多用 1 张券：官方未提供叠加规则，不假设可以叠'
         ];
@@ -1361,15 +1382,16 @@
           diningLabel: dining ? ((E.DINING_LABEL || {})[dining] || dining) : '未说明'
         };
         if (orderMode === 'split') {
-          var subOrders = core.built.subOrders.map(function (s, i) {
+          /* 订单视图：**券挂在这里**（一单一张券），真实算价也按订单下发 */
+          var orders = core.orders.map(function (o, i) {
             var real = realResults ? realResults[i] : null;
             return {
-              index: s.index,
-              name: s.name,
-              items: s.items,
-              subtotal: s.subtotal,
-              coupon: s.coupon,
-              payAfterCoupon: s.payAfterCoupon,
+              index: o.index,
+              name: o.name,
+              items: o.items,
+              subtotal: o.subtotal,
+              coupon: o.coupon || null,
+              payAfterCoupon: o.payAfterCoupon != null ? o.payAfterCoupon : o.subtotal,
               real: real ? {
                 price: real.price, originalPrice: real.originalPrice,
                 deliveryPrice: real.deliveryPrice != null ? real.deliveryPrice : null,
@@ -1389,15 +1411,26 @@
             splitRealTotal = round(splitRealTotal);
             splitDelivery = round(splitDelivery);
           }
-          var splitSubtotal = core.built.total;
+          var splitSubtotal = core.splitSubtotal;
           var splitPay = round(splitSubtotal - core.couponResult.totalCut + (splitDelivery || 0));
           var combinedPay = round(plan.totalPrice - core.combinedCut);
           var diff = round(splitPay - combinedPay);
           result.splitMode = 'byItem';
           result.people = members.length;
-          result.members = subOrders;
-          result.couponsUsed = subOrders.filter(function (s) { return s.coupon; })
-            .map(function (s) { return { member: s.name, title: s.coupon.title, estimatedCut: s.coupon.estimatedCut }; });
+          /* 人视图只用于内部转账：按小计比例摊券收益，**不挂券**（券是账号的） */
+          var ratio = splitSubtotal > 0 ? (core.couponResult.totalCut / splitSubtotal) : 0;
+          result.members = core.built.subOrders.map(function (s) {
+            return {
+              index: s.index, name: s.name, items: s.items, subtotal: s.subtotal,
+              share: true, coupon: null,
+              payAfterCoupon: round(s.subtotal * (1 - ratio))
+            };
+          });
+          result.orders = orders;
+          result.ordersWanted = core.ordersWanted;
+          result.worthCount = core.worthCount;
+          result.couponsUsed = orders.filter(function (o) { return o.coupon; })
+            .map(function (o) { return { order: o.name, member: o.name, title: o.coupon.title, estimatedCut: o.coupon.estimatedCut }; });
           result.combined = {
             total: plan.totalPrice,
             coupon: core.combinedCoupon,
@@ -1416,7 +1449,7 @@
             cheaper: diff < -0.005 ? 'split' : (diff > 0.005 ? 'combined' : 'tie'),
             diff: diff,
             verdict: diff < -0.005
-              ? '拆单各用券，估算省 ' + yuan(-diff) + '（配送费' + (splitDelivery ? '已按官方返回计入' : '未计入') + '）'
+              ? '拆成 ' + core.ordersWanted + ' 单' + (core.couponResult.totalCut > 0 ? '（用上 ' + core.couponsUsedCount + ' 张券）' : '（无可用券）') + '，估算省 ' + yuan(-diff) + '（配送费' + (splitDelivery ? '已按官方返回计入' : '未计入') + '）'
               : (diff > 0.005
                 ? '合单更划算：拆单估算多付 ' + yuan(diff) + (splitDelivery ? '（含各单配送费）' : '')
                 : '两条路子估算打平')
