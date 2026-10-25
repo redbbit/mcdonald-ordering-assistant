@@ -1,4 +1,5 @@
-/* 回归测试：验证 renderAssignResult 在 split / together / 无券账本 三种形状下不抛错、产出关键 DOM 文本。
+/* 回归测试：① renderAssignResult 在 split / together / 无券账本 三种形状下不抛错；
+ * ② renderPlan（GPT 接线版）角标/子项面板/混合方案/四维对比/maxCal/权重不回归。
  * 用法：node tools/test_assign_ui.js */
 'use strict';
 var fs = require('fs');
@@ -7,16 +8,17 @@ var vm = require('vm');
 
 var src = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
 
-/* 提取 renderAssignResult 函数体（花括号配对） */
-var start = src.indexOf('function renderAssignResult(ao) {');
-if (start < 0) { console.error('FAIL: renderAssignResult not found'); process.exit(1); }
-var i = src.indexOf('{', start), depth = 0, end = -1;
-for (var j = i; j < src.length; j++) {
-  if (src[j] === '{') depth++;
-  else if (src[j] === '}') { depth--; if (depth === 0) { end = j + 1; break; } }
+/* 提取指定函数体（花括号配对） */
+function extractFn(name) {
+  var start = src.indexOf('function ' + name + '(');
+  if (start < 0) { console.error('FAIL: ' + name + ' not found'); process.exit(1); }
+  var i = src.indexOf('{', start), depth = 0, end = -1;
+  for (var j = i; j < src.length; j++) {
+    if (src[j] === '{') depth++;
+    else if (src[j] === '}') { depth--; if (depth === 0) { end = j + 1; break; } }
+  }
+  return src.slice(start, end);
 }
-if (end < 0) { console.error('FAIL: unbalanced braces'); process.exit(1); }
-var fnSrc = src.slice(start, end);
 
 /* DOM 桩：任何 getElementById 都返回一个可记录 innerHTML 的元素 */
 var captured = {};
@@ -28,7 +30,10 @@ function stubEl(id) {
   };
 }
 
-var sandbox = {
+var failures = 0;
+
+/* ================= ① renderAssignResult：拆单/合单/券账本 ================= */
+var assignSandbox = {
   console: console,
   document: { getElementById: stubEl, querySelectorAll: function () { return []; }, addEventListener: function () {}, createElement: function () { return stubEl('_tmp'); } },
   window: { clearTimeout: function () {}, setTimeout: function () { return 0; } },
@@ -38,8 +43,8 @@ var sandbox = {
   showToast: function () {},
   state: { coupons: [], activeCoupon: null }
 };
-vm.createContext(sandbox);
-vm.runInContext(fnSrc + '\nthis.renderAssignResult = renderAssignResult;', sandbox);
+vm.createContext(assignSandbox);
+vm.runInContext(extractFn('renderAssignResult') + '\nthis.renderAssignResult = renderAssignResult;', assignSandbox);
 
 var cases = {
   /* split 模式：经典形状 */
@@ -93,11 +98,10 @@ var cases = {
   }
 };
 
-var failures = 0;
 Object.keys(cases).forEach(function (name) {
   try {
     captured = {};
-    sandbox.renderAssignResult(cases[name]);
+    assignSandbox.renderAssignResult(cases[name]);
     var html = captured['assignResult'] || '';
     var checks = [];
     if (name === 'split') {
@@ -126,20 +130,8 @@ Object.keys(cases).forEach(function (name) {
     console.error('FAIL [' + name + '] threw: ' + e.message);
   }
 });
-console.log(failures ? failures + ' FAILURES' : 'ALL SMOKE CHECKS PASSED');
 
-/* ================= 第 8/9 轮方案卡渲染回归（renderPlan / comboComparePanel） ================= */
-/* 提取 renderPlan + comboComparePanel 函数体（花括号配对，两个函数分别提取） */
-function extractFn(name) {
-  var start = src.indexOf('function ' + name + '(');
-  if (start < 0) { console.error('FAIL: ' + name + ' not found'); process.exit(1); }
-  var i = src.indexOf('{', start), depth = 0, end = -1;
-  for (var j = i; j < src.length; j++) {
-    if (src[j] === '{') depth++;
-    if (src[j] === '}') { depth--; if (depth === 0) { end = j + 1; break; } }
-  }
-  return src.slice(start, end);
-}
+/* ================= ② renderPlan：第 8/9 轮方案卡渲染回归（GPT 接线版） ================= */
 var planSandbox = {
   console: console,
   document: { getElementById: stubEl, querySelectorAll: function () { return []; }, addEventListener: function () {}, createElement: function () { return stubEl('_tmp'); } },
@@ -154,18 +146,19 @@ var planSandbox = {
   state: { plans: [], availability: {}, mode: 'offline' }
 };
 vm.createContext(planSandbox);
-vm.runInContext(extractFn('renderPlan') + '\n' + extractFn('comboComparePanel') + '\nthis.renderPlan = renderPlan; this.comboComparePanel = comboComparePanel;', planSandbox);
+vm.runInContext(extractFn('renderPlan') + '\nthis.renderPlan = renderPlan;', planSandbox);
 
 var planFailures = 0, planChecks = 0;
 function planCheck(cond, msg) { planChecks++; if (!cond) { planFailures++; console.error('FAIL [plan] ' + msg); } }
 var basePlan = {
   planId: 'plan-budget-1', tier: 'budget', title: '省钱聚餐', subtitle: '2 人 · 4 款',
   why: '按预算搭的', people: 2, itemCount: 4, items: [
-    { name: '麦香鸡套餐', quantity: 1, productCode: 'a1', sourceType: 'combo', fromCombo: null, combo: { comboPrice: 26.9, partsTotal: 37.9, save: 11, partsKnown: 3, partsCount: 3, complete: true }, imageLocal: 'img/x.png' },
+    { name: '麦香鸡套餐', quantity: 1, productCode: 'a1', sourceType: 'combo', fromCombo: null, combo: { comboPrice: 26.9, partsTotal: 37.9, save: 11, partsKnown: 3, partsCount: 3, complete: true },
+      parts: [{ name: '麦香鸡', qty: 1, code: 'b2' }, { name: '中薯条', qty: 1, code: 'c3' }, { name: '可乐中杯', qty: 1, code: 'd4' }], imageLocal: 'img/x.png' },
     { name: '麦香鸡', quantity: 1, productCode: 'b2', sourceType: 'comboPart', fromCombo: '麦香鸡套餐' },
     { name: '中薯条', quantity: 1, productCode: 'c3', sourceType: 'single', fromCombo: null }
   ],
-  totalPrice: 40.9, originalPrice: 51.9, discount: 11, perPersonPrice: 20.45,
+  totalPrice: 40.9, originalPrice: 51.9, discount: 11, perPersonPrice: 20.45, totalCalories: 900,
   simulated: true, priceSource: 'snapshot', newTags: [], promoTags: [],
   mixSummary: { fullCombos: 1, singles: 1, comboParts: 1, text: '本方案含 1 个完整套餐 + 1 个单点 + 1 个套餐子项转单点' },
   tradeoffExplanation: ['「麦香鸡套餐」拆开单点：比买整份省 ¥11，少 0 kcal', '官方 MCP 不支持套餐改配'],
@@ -180,28 +173,31 @@ var basePlan = {
   }],
   weights: { price: 1, kcal: 1, protein: 1, taste: 1.6 },
   maxCal: 800, withinMaxCal: false,
-  singlesOnly: false, lateNight: false
+  modes: { singlesOnly: false, lateNight: false },
+  resolved: { itemPrefs: [{ name: '中薯条', mention: '薯条', code: 'c3', pref: 'avoid' }] }
 };
 try {
+  planSandbox.state.plans = [basePlan];
   var html = planSandbox.renderPlan(basePlan);
-  planCheck(html.indexOf('src-part') >= 0, 'comboPart 角标渲染');
-  planCheck(html.indexOf('拆自 麦香鸡套餐') >= 0, 'comboPart fromCombo 透出');
-  planCheck(html.indexOf('src-combo') >= 0 && html.indexOf('src-single') >= 0, 'combo/single 角标渲染');
-  planCheck(html.indexOf('这份是怎么搭的') >= 0 && html.indexOf('1 个完整套餐') >= 0, 'mixSummary 渲染');
-  planCheck(html.indexOf('不支持套餐改配') >= 0, 'tradeoffExplanation 含不改配边界');
-  planCheck(html.indexOf('看套餐对比') >= 0, 'comboCompare 按钮出现');
-  planCheck(html.indexOf('data-panel="comboCompare"') >= 0, 'comboCompare 面板容器');
-  planCheck(html.indexOf('上限 800 kcal') >= 0 && html.indexOf('已超标') >= 0, 'maxCal 超标提示');
-  planCheck(html.indexOf('cal-over') >= 0, '超标黄牌 class');
-  planCheck(html.indexOf('评分权重') >= 0 && html.indexOf('口味×1.6') >= 0, '非默认权重回显');
+  planCheck(html.indexOf('source-type-badge comboPart') >= 0, 'comboPart 角标渲染');
+  planCheck(html.indexOf('来自麦香鸡套餐') >= 0, 'comboPart fromCombo 透出（GPT 版「来自」文案）');
+  planCheck(html.indexOf('source-type-badge combo"') >= 0 && html.indexOf('source-type-badge single"') >= 0, 'combo/single 角标渲染');
   planCheck(html.indexOf('套餐比单点省 ¥11') >= 0, '既有套餐省幅徽标不回归');
-  var compareHtml = planSandbox.comboComparePanel(basePlan);
-  planCheck(compareHtml.indexOf('麦香鸡套餐') >= 0, '对比卡标题');
-  planCheck(compareHtml.indexOf('拆开省 ¥11') >= 0, '价格差方向（拆开省）');
-  planCheck(compareHtml.indexOf('800 vs 500 kcal') >= 0, '热量对比');
-  planCheck(compareHtml.indexOf('30 vs 20 g') >= 0, '蛋白质对比');
-  planCheck(compareHtml.indexOf('买不到、未编价：可乐中杯') >= 0, 'unresolvedParts 不编价');
-  planCheck(compareHtml.indexOf('官方 MCP 不支持套餐改配') >= 0, '对比面板底部边界文案');
+  planCheck(html.indexOf('mix-summary') >= 0 && html.indexOf('1 个完整套餐') >= 0, 'mixSummary 渲染');
+  planCheck(html.indexOf('整套餐 vs 子项单点 · 四维对比') >= 0, '四维对比内联 details（GPT 版无独立按钮）');
+  planCheck(html.indexOf('data-panel="comboCompare"') < 0, 'comboCompare 面板容器已移除（内联后不占位）');
+  planCheck(html.indexOf('官方 MCP 不支持套餐改配') >= 0, '不改配边界露出');
+  planCheck(html.indexOf('¥26.90 套餐 / ¥15.90 子项') >= 0, '价格四维：套餐 vs 子项');
+  planCheck(html.indexOf('800 / 500 kcal') >= 0, '热量四维对比');
+  planCheck(html.indexOf('30 / 20 g') >= 0, '蛋白质四维对比');
+  planCheck(html.indexOf('maxcal-note over') >= 0 && html.indexOf('超出上限') >= 0 && html.indexOf('上限 800') >= 0 && html.indexOf('全单 900 kcal') >= 0, 'maxCal 超标黄牌（GPT 版文案）');
+  planCheck(html.indexOf('plan-weights') >= 0 && html.indexOf('口味 1.6') >= 0, '非默认权重回显');
+  /* 子项可视化勾选面板（GPT 新增）：完整套餐卡带 parts 才有 */
+  planCheck(html.indexOf('item-subparts') >= 0, '完整套餐卡带子项偏好面板');
+  planCheck(html.indexOf('data-subpart-pref') >= 0 && html.indexOf('data-name="中薯条"') >= 0, '子项下拉 data 契约（改偏好重新请求）');
+  planCheck(html.indexOf('<option value="avoid" selected>') >= 0, 'resolved.itemPrefs 的避免项在下拉里选中');
+  planCheck(html.indexOf('无所谓') >= 0 && html.indexOf('想要') >= 0 && html.indexOf('不想要') >= 0, '子项三态选项');
+  planCheck(html.indexOf('改变偏好后会重新请求方案') >= 0, '子项面板边界说明');
   console.log('PASS renderPlan-rich (' + planChecks + ' checks)');
 } catch (e) { planFailures++; console.error('FAIL [plan] rich threw: ' + e.message); }
 
@@ -210,23 +206,40 @@ try {
   var plain = JSON.parse(JSON.stringify(basePlan));
   plain.mixSummary = null; plain.tradeoffExplanation = null; plain.comboCompare = null;
   plain.maxCal = null; plain.weights = { price: 1, kcal: 1, protein: 1, taste: 1 };
+  plain.resolved = null;
   var plainHtml = planSandbox.renderPlan(plain);
   planCheck(plainHtml.indexOf('mix-summary') < 0, '普通方案不渲染 mix 区块');
-  planCheck(plainHtml.indexOf('看套餐对比') < 0, '普通方案无对比按钮');
-  planCheck(plainHtml.indexOf('cal-cap') < 0, '无 maxCal 不渲染上限徽标');
-  planCheck(plainHtml.indexOf('weights-pill') < 0, '默认权重不回显');
-  planCheck(plainHtml.indexOf('全单点模式') < 0, '非 singlesOnly 不渲染模式标签');
-  /* singlesOnly 模式标签 */
-  var single = JSON.parse(JSON.stringify(plain));
-  single.singlesOnly = true;
-  planCheck(planSandbox.renderPlan(single).indexOf('全单点模式') >= 0, 'singlesOnly 模式标签');
+  planCheck(plainHtml.indexOf('combo-comparison') < 0, '普通方案无四维对比');
+  planCheck(plainHtml.indexOf('maxcal-note') < 0, '无 maxCal 不渲染上限行');
+  planCheck(plainHtml.indexOf('plan-weights') < 0, '默认权重不回显（引擎恒回 weights，守卫必须防噪音）');
+  planCheck(plainHtml.indexOf('单点畅吃') < 0, '非 singlesOnly 不渲染模式标签');
+  planCheck(plainHtml.indexOf('套餐比单点省') >= 0, 'plain 的 combo 项仍显示省幅徽标（逐项徽标与方案级 plain 无关）');
+  /* 模式标签走 plan.modes（GPT 版口径，不是 plan.singlesOnly） */
+  var modePlan = JSON.parse(JSON.stringify(plain));
+  modePlan.modes = { singlesOnly: true, lateNight: false };
+  planCheck(planSandbox.renderPlan(modePlan).indexOf('单点畅吃 · 全单点') >= 0, 'singlesOnly 模式标签（plan.modes）');
+  var nightPlan = JSON.parse(JSON.stringify(plain));
+  nightPlan.modes = { singlesOnly: false, lateNight: true };
+  planCheck(planSandbox.renderPlan(nightPlan).indexOf('宵夜') < 0, 'lateNight 不硬造模式标签（口味加权在引擎，UI 不装懂）');
   /* 官方无数据的维度：null 不是 0 */
   var noData = JSON.parse(JSON.stringify(basePlan));
   noData.comboCompare = [{ combo: '测试套餐', price: { combo: 20, parts: 20, delta: 0, cheaper: 'combo' }, kcal: null, protein: null, taste: null }];
-  var noDataHtml = planSandbox.comboComparePanel(noData);
-  planCheck(noDataHtml.indexOf('官方未提供，未估算') >= 0, '无数据维度显示未提供');
-  planCheck(noDataHtml.indexOf('价格一样') >= 0, 'delta=0 文案');
+  var noDataHtml = planSandbox.renderPlan(noData);
+  planCheck(noDataHtml.indexOf('官方未提供') >= 0, '无数据维度显示未提供');
+  planCheck(noDataHtml.indexOf('¥20 套餐 / ¥20 子项') >= 0, 'delta=0 时两列照实显示');
+  planCheck((noDataHtml.match(/官方未提供/g) || []).length >= 3, 'kcal/protein/taste 三个维度都不编数');
+  /* withinMaxCal===true 不显示超标 */
+  var okPlan = JSON.parse(JSON.stringify(basePlan));
+  okPlan.withinMaxCal = true; okPlan.maxCal = 1000;
+  var okHtml = planSandbox.renderPlan(okPlan);
+  planCheck(okHtml.indexOf('超出上限') < 0, '达标时不报超标');
+  planCheck(okHtml.indexOf('已校验范围内') >= 0 || okHtml.indexOf('预演范围内') >= 0, '达标文案二态（离线预演/在线校验）');
   console.log('PASS renderPlan-plain (累计 ' + planChecks + ' checks)');
 } catch (e) { planFailures++; console.error('FAIL [plan] plain threw: ' + e.message); }
-console.log(planFailures ? planFailures + ' PLAN FAILURES' : 'ALL PLAN CHECKS PASSED');
-if (failures || planFailures) process.exit(1);
+
+console.log('='.repeat(60));
+if (failures || planFailures) {
+  console.log('❌ assign ' + failures + ' 项 / plan ' + planFailures + ' 项失败（共 ' + planChecks + ' 项 plan 断言）');
+  process.exit(1);
+}
+console.log('✅ 全部通过（assign 3 形状 + plan ' + planChecks + ' 项断言）');

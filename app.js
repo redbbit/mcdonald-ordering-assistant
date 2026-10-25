@@ -2,7 +2,7 @@
   'use strict';
 
   var S;
-  var state = { meta: null, showcase: [], campaigns: [], coupons: [], activeCoupon: null, plans: [], selected: new Set(), slots: [], activeSlot: '', lastQuery: null, lastSubmittedText: null, slotRevision: 0, slide: 0, campaignSlide: 0, toastTimer: 0, rotationTimer: 0, campaignTimer: 0, adapter: null, mode: 'offline', degraded: false, degradeReason: '', requestId: '', availability: {} };
+  var state = { meta: null, showcase: [], campaigns: [], coupons: [], activeCoupon: null, plans: [], selected: new Set(), slots: [], activeSlot: '', lastQuery: null, slotRevision: 0, actionSequence: 0, slide: 0, campaignSlide: 0, toastTimer: 0, rotationTimer: 0, campaignTimer: 0, adapter: null, mode: 'offline', degraded: false, degradeReason: '', requestId: '', availability: {} };
   var $ = function (id) { return document.getElementById(id); };
   var els = {
     metaLine: $('metaLine'), slotSelector: $('slotSelector'), conversation: $('conversation'), request: $('requestText'), charCount: $('charCount'), form: $('advisorForm'), submit: $('submitButton'),
@@ -202,10 +202,8 @@
     var tags = [];
     (plan.newTags || []).forEach(function (t) { tags.push(buildTag(t, 'new')); });
     (plan.promoTags || []).forEach(function (t) { tags.push(buildTag(t, 'promo')); });
-    // 模式区分（第 8 轮 UI 任务 5）：singlesOnly 全单点 ≠ 混合方案，lateNight 宵夜模式
-    if (plan.singlesOnly) tags.push(buildTag('全单点模式 · 一个套餐都不要', 'mode'));
-    if (plan.lateNight) tags.push(buildTag('宵夜模式', 'mode'));
     if (!tags.length) tags.push(buildTag('按你的需求搭配', ''));
+    if (plan.modes && plan.modes.singlesOnly) tags.push(buildTag('单点畅吃 · 全单点', 'combo'));
     var itemHtml = items.map(function (item) {
       var imgObj = { image: item.image, imageLocal: item.imageLocal, imageRemote: item.imageRemote, name: item.name };
       var itemCode = item.productCode || item.code || item.product_code || '';
@@ -220,18 +218,15 @@
       } else if (combo && combo.complete === false) {
         comboBadge = '<small class="combo-partial" title="部分子项官方未提供价格，未估算">套餐子项部分无官方价</small>';
       }
-      // 来源角标（第 8 轮 UI 任务 3）：combo 整份套餐 / single 单独点 / comboPart 套餐子项转单点。
-      // 官方 MCP 没有改配接口——comboPart 是「按子项单点价另买」，不是定制套餐，文案不能写错
-      var srcBadge = '';
-      if (item.sourceType === 'comboPart') {
-        srcBadge = '<small class="src-badge src-part" title="从「' + attr(item.fromCombo || '套餐') + '」里拆出来，按子项单点价另买；官方不支持套餐改配">套餐子项 · 单点价' + (item.fromCombo ? '（拆自 ' + esc(item.fromCombo) + '）' : '') + '</small>';
-      } else if (item.sourceType === 'combo') {
-        srcBadge = '<small class="src-badge src-combo">整份套餐</small>';
-      } else if (item.sourceType === 'single') {
-        srcBadge = '<small class="src-badge src-single">单独点</small>';
-      }
-      return '<div class="plan-item" title="' + attr(item.name) + ' · ' + roleLabel(item) + '">' + imageMarkup(imgObj, '', item.name + '，官方商品图') +
-        '<span>' + esc(item.name) + '<b>×' + esc(item.quantity) + '</b>' + stock + comboBadge + srcBadge + '</span></div>';
+      var sourceLabels = { combo: '套餐', single: '单点', comboPart: '套餐子项转单点' };
+      var sourceBadge = item.sourceType ? '<small class="source-type-badge ' + attr(item.sourceType) + '">' + esc(sourceLabels[item.sourceType] || item.sourceType) + (item.sourceType === 'comboPart' && item.fromCombo ? ' · 来自' + esc(item.fromCombo) : '') + '</small>' : '';
+      var prefs = (plan.resolved && plan.resolved.itemPrefs) || (state.plans[0] && state.plans[0].resolved && state.plans[0].resolved.itemPrefs) || plan.itemPrefs || [];
+      var partPanel = item.sourceType === 'combo' && item.parts && item.parts.length ? '<details class="item-subparts"><summary>拆开看看 · 子项偏好</summary>' + item.parts.map(function (part) {
+        var pref = prefs.filter(function (p) { return p.name === part.name || (part.code && p.code === part.code); })[0];
+        return '<label><span>' + esc(part.name) + (part.qty > 1 ? ' ×' + esc(part.qty) : '') + '</span><select data-subpart-pref data-name="' + attr(part.name) + '" data-code="' + attr(part.code || '') + '"><option value="neutral"' + (!pref ? ' selected' : '') + '>无所谓</option><option value="want"' + (pref && pref.pref === 'want' ? ' selected' : '') + '>想要</option><option value="avoid"' + (pref && pref.pref === 'avoid' ? ' selected' : '') + '>不想要</option></select></label>';
+      }).join('') + '<small>改变偏好后会重新请求方案；套餐不能改配，偏好只参与整套餐与子项单点候选的比较。</small></details>' : '';
+      return '<div class="plan-item' + (partPanel ? ' has-subparts' : '') + '" title="' + attr(item.name) + ' · ' + roleLabel(item) + '">' + imageMarkup(imgObj, '', item.name + '，官方商品图') +
+        '<span>' + esc(item.name) + '<b>×' + esc(item.quantity) + '</b>' + sourceBadge + stock + comboBadge + '</span>' + partPanel + '</div>';
     }).join('');
     var isSimulated = plan.simulated === true || plan.mode === 'offline' || state.mode !== 'online';
     var priceNote = isSimulated ? '<span class="source-pill simulated-pill">离线预演</span>' : '<span class="source-pill live-pill">MCP 在线</span>';
@@ -241,33 +236,25 @@
       var anyPartial = items.some(function (i) { return i.combo && i.combo.complete === false; });
       comboTag = buildTag('含 ' + cs.comboCount + ' 份套餐 · 比拆开单点' + (anyPartial ? '至少省 ' : '共省 ') + money(cs.totalSave), 'combo');
     }
-    // 热量上限（第 9 轮 maxCal）：超标必须黄牌提示，不谎报达标
-    var calCap = '';
-    if (plan.maxCal != null) {
-      var calOver = plan.withinMaxCal === false;
-      calCap = '<span class="cal-cap' + (calOver ? ' cal-over' : '') + '" title="' + (calOver ? '已超出你设的热量上限（当前全单 ' + num(plan.totalCalories, 0) + ' kcal）' : '全单 ' + num(plan.totalCalories, 0) + ' kcal，在你设的上限内') + '">上限 ' + num(plan.maxCal, 0) + ' kcal' + (calOver ? ' · 已超标' : '') + '</span>';
-    }
-    // 当前权重回显（第 8 轮）：滑块调过或目标加成后，让用户看到这版按什么标准打的分
-    var w = plan.weights;
-    var weightPill = (w && (w.price !== 1 || w.kcal !== 1 || w.protein !== 1 || w.taste !== 1))
-      ? '<span class="weights-pill" title="这版方案实际生效的评分权重">评分权重 价格×' + num(w.price, 1) + ' · 热量×' + num(w.kcal, 1) + ' · 蛋白×' + num(w.protein, 1) + ' · 口味×' + num(w.taste, 1) + '</span>' : '';
-    // 混合方案人话总结 + 权衡解释（第 8 轮 UI 任务 3）：null 就不渲染，不给普通方案硬编
-    var mixHtml = '';
-    var ms = plan.mixSummary;
-    if (ms && ms.text) {
-      mixHtml = '<div class="mix-summary"><h4>这份是怎么搭的</h4><p>' + esc(ms.text) + '</p>' +
-        (plan.tradeoffExplanation || []).map(function (line) { return '<p class="tradeoff-line">' + esc(line) + '</p>'; }).join('') + '</div>';
-    }
-    var compareButton = (plan.comboCompare && plan.comboCompare.length)
-      ? '<button type="button" class="detail-button" data-detail="comboCompare" aria-expanded="false">看套餐对比</button>' : '';
+    var mix = plan.mixSummary && plan.mixSummary.text ? '<p class="mix-summary">' + esc(plan.mixSummary.text) + '</p>' : '';
+    // 当前权重回显：引擎恒回 weights 对象，默认全 1 时不许刷噪音——只有真调过（滑块/目标加成）才露出
+    var w4 = plan.weights;
+    var weights = (w4 && (w4.price !== 1 || w4.kcal !== 1 || w4.protein !== 1 || w4.taste !== 1))
+      ? '<p class="plan-weights">当前权重 · 价格 ' + num(w4.price, 1) + ' · 热量 ' + num(w4.kcal, 1) + ' · 蛋白质 ' + num(w4.protein, 1) + ' · 口味 ' + num(w4.taste, 1) + '</p>' : '';
+    var tradeoffs = (plan.tradeoffExplanation || []).map(function (line) { return '<li>' + esc(line) + '</li>'; }).join('');
+    var comparisons = plan.comboCompare && plan.comboCompare.length ? '<details class="combo-comparison"><summary>整套餐 vs 子项单点 · 四维对比' + (isSimulated ? ' <b class="preview-mark">预演</b>' : '') + '</summary>' + plan.comboCompare.map(function (c) {
+      function metric(v, label, formatter) { return '<div><b>' + label + '</b><span>' + (v == null ? '官方未提供' : formatter(v)) + '</span></div>'; }
+      return '<section class="combo-compare-row"><h4>' + esc(c.combo) + '</h4><div class="combo-compare-grid">' + metric(c.price, '价格', function (x) { return money(x.combo) + ' 套餐 / ' + money(x.parts) + ' 子项'; }) + metric(c.kcal, '热量', function (x) { return num(x.combo, 0) + ' / ' + num(x.parts, 0) + ' kcal'; }) + metric(c.protein, '蛋白质', function (x) { return num(x.combo, 1) + ' / ' + num(x.parts, 1) + ' g'; }) + metric(c.taste, '口味匹配', function (x) { return esc(x.parts || x.combo); }) + '</div>' + (c.note ? '<p>' + esc(c.note) + '</p>' : '') + '</section>';
+    }).join('') + (tradeoffs ? '<ul class="tradeoff-list">' + tradeoffs + '</ul>' : '') + '<p class="official-boundary">官方 MCP 不支持套餐改配；套餐子项转单点代表另买子项单品，不是定制套餐。</p></details>' : '';
+    var maxCalNote = plan.maxCal != null ? '<p class="maxcal-note ' + (plan.withinMaxCal === false ? 'over' : '') + (isSimulated ? ' preview' : '') + '">全单 ' + (plan.totalCalories == null ? '热量官方未提供' : num(plan.totalCalories, 0) + ' kcal') + ' · 上限 ' + num(plan.maxCal, 0) + (plan.withinMaxCal === false ? ' ⚠ 超出上限' : plan.withinMaxCal === true ? (isSimulated ? ' · 预演范围内' : ' · 已校验范围内') : ' · 未核验') + '</p>' : '';
     return '<article class="plan-card" data-plan-id="' + attr(plan.planId) + '">' +
       '<div class="plan-main"><div class="plan-cover"><span class="plan-tier">' + esc(tierNames[plan.tier] || '个性搭配') + '</span>' + imageMarkup(items[0] || {}, '', (items[0] && items[0].name || plan.title) + '，麦当劳官方商品图') + '</div>' +
       '<div class="plan-copy"><div class="plan-title-row"><h3>' + esc(plan.title) + '</h3></div><p class="plan-subtitle">' + esc(plan.subtitle || (plan.people + ' 人 · ' + plan.itemCount + ' 款')) + '</p>' +
-      '<p class="plan-why">' + esc(plan.why || '') + '</p><div class="price-line"><strong class="plan-price">' + money(plan.totalPrice) + '</strong><span class="plan-original">' + money(plan.originalPrice) + '</span><span class="save-pill">省 ' + money(plan.discount) + '</span><span class="per-person">人均 ' + money(plan.perPersonPrice) + ' · ' + esc(plan.people) + ' 人</span>' + priceNote + calCap + weightPill + '</div>' +
-      '<div class="plan-labels">' + tags.join('') + comboTag + '</div></div></div>' +
-      '<div class="plan-items" aria-label="方案菜品">' + itemHtml + '</div>' + mixHtml +
-      '<div class="plan-actions"><button type="button" class="detail-button" data-detail="calories" aria-expanded="false">看这顿热量</button><button type="button" class="detail-button" data-detail="nutrition" aria-expanded="false">看营养成分</button>' + compareButton + '<button type="button" class="select-plan" aria-pressed="false">选这份</button></div>' +
-      '<section class="detail-panel" data-panel="calories" hidden></section><section class="detail-panel" data-panel="nutrition" hidden></section><section class="detail-panel" data-panel="comboCompare" hidden></section></article>';
+      '<p class="plan-why">' + esc(plan.why || '') + '</p><div class="price-line"><strong class="plan-price">' + money(plan.totalPrice) + '</strong><span class="plan-original">' + money(plan.originalPrice) + '</span><span class="save-pill">省 ' + money(plan.discount) + '</span><span class="per-person">人均 ' + money(plan.perPersonPrice) + ' · ' + esc(plan.people) + ' 人</span>' + priceNote + '</div>' +
+      '<div class="plan-labels">' + tags.join('') + comboTag + '</div>' + mix + weights + maxCalNote + comparisons + '</div></div>' +
+      '<div class="plan-items" aria-label="方案菜品">' + itemHtml + '</div>' +
+      '<div class="plan-actions"><button type="button" class="detail-button" data-detail="calories" aria-expanded="false">看这顿热量</button><button type="button" class="detail-button" data-detail="nutrition" aria-expanded="false">看营养成分</button><button type="button" class="select-plan" aria-pressed="false">选这份</button></div>' +
+      '<section class="detail-panel" data-panel="calories" hidden></section><section class="detail-panel" data-panel="nutrition" hidden></section></article>';
   }
   function caloriePanel(plan) {
     if (plan.totalCalories == null || plan.calorieKnown === false) {
@@ -303,39 +290,6 @@
   function selectedPlanObjects() {
     return state.plans.filter(function (plan) { return state.selected.has(plan.planId); });
   }
-  /* 套餐 vs 拆开单点四维对比（第 8 轮 UI 任务 4）。
-   * 官方无数据的维度显示「官方未提供，未估算」，不画 0、不估算——红线。
-   * 每个完整套餐一条对比；子项面板的 want/avoid 会实时改变这里的口味匹配结论。 */
-  function comboComparePanel(plan) {
-    var rows = plan.comboCompare || [];
-    if (!rows.length) return '<h4>套餐 vs 拆开单点</h4><div class="notice">这份方案里没有可对比的完整套餐。</div>';
-    var html = '<h4>整份套餐 vs 拆开单点 · 官方数据</h4>';
-    rows.forEach(function (r) {
-      var priceTxt = r.price
-        ? ('套餐 ' + money(r.price.combo) + ' vs 拆开 ' + money(r.price.parts) +
-           (r.price.delta < 0 ? ' · 拆开省 ' + money(-r.price.delta) : r.price.delta > 0 ? ' · 套餐省 ' + money(r.price.delta) : ' · 价格一样'))
-        : '官方未提供，未估算';
-      var kcalTxt = r.kcal
-        ? (num(r.kcal.combo, 0) + ' vs ' + num(r.kcal.parts, 0) + ' kcal' + (r.kcal.delta ? '（' + (r.kcal.delta > 0 ? '+' : '') + num(r.kcal.delta, 0) + '）' : ''))
-        : '官方未提供，未估算';
-      var proTxt = r.protein
-        ? (num(r.protein.combo, 1) + ' vs ' + num(r.protein.parts, 1) + ' g' + (r.protein.delta ? '（' + (r.protein.delta > 0 ? '+' : '') + num(r.protein.delta, 1) + '）' : ''))
-        : '官方未提供，未估算';
-      var tasteTxt = (r.taste && (r.taste.parts || r.taste.combo)) ? r.taste.parts : '官方未提供，未估算';
-      html += '<div class="compare-card"><div class="compare-head"><strong>' + esc(r.combo) + '</strong>' +
-        buildTag(r.price && r.price.cheaper === 'parts' ? '拆开单点更省' : '整份套餐更省', r.price && r.price.cheaper === 'parts' ? 'combo' : 'new') + '</div>' +
-        '<div class="compare-rows">' +
-        '<div class="compare-row"><span>价格</span><span>' + priceTxt + '</span></div>' +
-        '<div class="compare-row"><span>热量</span><span>' + kcalTxt + '</span></div>' +
-        '<div class="compare-row"><span>蛋白质</span><span>' + proTxt + '</span></div>' +
-        '<div class="compare-row"><span>口味匹配</span><span>' + esc(tasteTxt) + '</span></div>' +
-        '</div>' +
-        (r.unresolvedParts && r.unresolvedParts.length ? '<p class="unknown-list">买不到、未编价：' + esc(r.unresolvedParts.join('、')) + '（官方无单点价）</p>' : '') +
-        (r.note ? '<p class="unknown-list">' + esc(r.note) + '</p>' : '') +
-        '</div>';
-    });
-    return html + '<p class="compare-note">官方 MCP 不支持套餐改配（没有改配接口）：不能让套餐去掉某个子项。要么买整份，要么把想要的子项按单点价另买。</p>';
-  }
   function updateSelectionBar() {
     var count = state.selected.size;
     els.selectionBar.hidden = !count;
@@ -349,20 +303,6 @@
   function showNotices(plans) {
     var first = plans && plans[0] || {};
     var notices = [];
-    // ⓿ 顶部「我理解成了」摘要（第 9 轮 UI 规则）：让用户一眼确认解析对不对——最重要的纠错入口
-    var fr = first.resolved || {};
-    var parts = [];
-    parts.push((fr.people || first.people || 1) + ' 人');
-    parts.push(fr.unlimited ? '预算不限' : ('预算 ' + (fr.budgetMin || 0) + (fr.budgetMax != null ? '–' + fr.budgetMax : ' 以上')));
-    if (fr.maxCal != null) parts.push('上限 ' + fr.maxCal + ' kcal');
-    if (first.goalInfo && first.goalInfo.recognized !== false && first.goalInfo.label) parts.push(first.goalInfo.label);
-    if (fr.avoid && fr.avoid.length) parts.push('不吃 ' + fr.avoid.join('、'));
-    (first.wanted || []).forEach(function (w) { parts.push('想吃 ' + w.name); });
-    (fr.itemPrefs || []).forEach(function (p) {
-      parts.push((p.pref === 'avoid' ? '不想要 ' : '想要 ') + (p.mention || p.name));
-    });
-    if (fr.singlesOnly) parts.push('全单点');
-    notices.push('<div class="notice notice-understand">🧭 我理解成了：' + esc(parts.join(' · ')) + '</div>');
     // ① 输入冲突：文本与控件不一致 / 忌口挡住点名菜——如实说谁生效了
     (first.conflicts || []).forEach(function (c) {
       notices.push('<div class="notice notice-warn">⚠ ' + esc(c.note) + '</div>');
@@ -404,20 +344,48 @@
   function currentAvoid() {
     return Array.prototype.slice.call(els.avoid.querySelectorAll('input:checked')).map(function (input) { return input.value; });
   }
+  function currentItemPrefs() {
+    var first = state.plans && state.plans[0];
+    return ((first && first.resolved && first.resolved.itemPrefs) || (state.lastQuery && state.lastQuery.itemPrefs) || []).slice();
+  }
+  function renderUnderstanding(plans) {
+    var first = plans && plans[0] || {};
+    var resolved = first.resolved || {};
+    var parts = [];
+    if (resolved.people) parts.push(resolved.people + ' 人');
+    if (resolved.unlimited === false && resolved.budgetMax != null) parts.push('预算 ' + (resolved.budgetMin || 0) + '–' + resolved.budgetMax);
+    else parts.push('预算不限');
+    var maxCal = first.maxCal != null ? first.maxCal : resolved.maxCal;
+    if (maxCal != null) parts.push('热量 ≤' + maxCal + ' kcal');
+    if (first.goalInfo && first.goalInfo.userText) parts.push('目标 ' + first.goalInfo.userText);
+    (resolved.wanted || []).forEach(function (v) { parts.push('想吃 ' + v); });
+    (resolved.avoid || []).forEach(function (v) { parts.push('不吃' + v); });
+    (resolved.itemPrefs || []).forEach(function (p) { parts.push((p.pref === 'avoid' ? '不想要 ' : '想要 ') + (p.mention || p.name)); });
+    (first.conflicts || []).forEach(function (c) { if (c.note) parts.push(c.note); });
+    var line = $('understandingLine');
+    if (line) { line.hidden = !parts.length; line.innerHTML = '<strong>我理解成了：</strong>' + parts.map(esc).join(' · '); }
+    var panel = $('itemPrefsPanel');
+    if (!panel) return;
+    var prefs = resolved.itemPrefs || first.itemPrefs || [];
+    var rows = prefs.map(function (p, i) {
+      return '<label class="item-pref-row"><span><b>' + esc(p.mention || p.name) + '</b><small>系统识别为 ' + esc(p.name) + '</small></span><select data-item-pref="' + i + '" data-name="' + attr(p.name) + '" data-mention="' + attr(p.mention || p.name) + '"><option value="neutral"' + (!p.pref ? ' selected' : '') + '>无所谓</option><option value="want"' + (p.pref === 'want' ? ' selected' : '') + '>想要</option><option value="avoid"' + (p.pref === 'avoid' ? ' selected' : '') + '>不想要</option></select></label>';
+    }).join('');
+    panel.hidden = false;
+    panel.innerHTML = '<details' + (prefs.length ? ' open' : '') + '><summary>套餐子项偏好 · 勾选后重新计算</summary><p>填写菜单中的子项名称，或确认系统从自然语言识别到的子项；变化会交给服务重新生成方案。</p>' + (rows || '<p class="soft-placeholder">暂未识别子项偏好。你可以添加菜单里的子项名称。</p>') + '<div class="item-pref-add"><input type="text" id="itemPrefName" placeholder="例如：中薯条" aria-label="菜单子项名称"><select id="itemPrefValue" aria-label="子项偏好"><option value="want">想要</option><option value="avoid">不想要</option></select><button type="button" class="outline-button" id="addItemPref">添加偏好并重新搭配</button></div></details>';
+  }
   /* 采集控件原值交给服务层 parseQuery 统一裁决（文本 > 控件 > 默认）。
    * 冲突检测、实际生效值（resolved）都在 service.js 里做，UI 只负责展示与回填。 */
-  function controlsTouched() {
-    return els.people.dataset.touched === 'true' || els.budgetMin.dataset.touched === 'true' ||
-      els.budgetMax.dataset.touched === 'true' || els.goal.dataset.touched === 'true' ||
-      els.unlimited.dataset.touched === 'true' || !!els.avoid.querySelector('input:checked');
-  }
   function mergeQuery() {
     var text = els.request.value.trim();
-    /* 最后一次用户动作生效（第 9 轮 UI 规则）：用户改过控件、且没再动输入框
-     * （内容还是上次提交那段）→ 以控件值为准，别让旧文本把改过的控件冲掉。
-     * 用户改了输入框 → 文本赢（text 与 lastSubmittedText 不同）。 */
-    if (state.lastSubmittedText != null && text === state.lastSubmittedText && controlsTouched()) {
-      text = '';
+    var textStamp = Number(els.request.dataset.actionAt || 0);
+    var avoidStamp = Math.max.apply(null, Array.prototype.map.call(els.avoid.querySelectorAll('input'), function (input) { return Number(input.dataset.actionAt || 0); }));
+    var controlStamp = Math.max.apply(null, ['people', 'budgetMin', 'budgetMax', 'maxCal', 'unlimited', 'goal'].map(function (id) { return Number($(id).dataset.actionAt || 0); }).concat([avoidStamp]));
+    // 若控件是最后一次动作，移除文本里对应的旧槽位表达，让服务层用控件值解析。
+    if (controlStamp > textStamp) {
+      if (Number($('people').dataset.actionAt || 0) === controlStamp) text = text.replace(/[0-9一二两俩三仨四五六七八九十]+\s*(?:个人|个|人|位)/g, ' ');
+      if (Math.max(Number($('budgetMin').dataset.actionAt || 0), Number($('budgetMax').dataset.actionAt || 0), Number($('unlimited').dataset.actionAt || 0)) === controlStamp) text = text.replace(/(?:预算|花|控制在)?\s*[0-9]{1,4}\s*(?:[-~—－至到]\s*[0-9]{1,4}\s*)?(?:块钱|块|元|RMB)?\s*(?:以内|以下|之内|封顶|左右|出头|搞定)?/gi, ' ');
+      if (Number($('maxCal').dataset.actionAt || 0) === controlStamp) text = text.replace(/(?:不超过|最多|以内|控制在|限制在)?\s*[0-9]{2,4}\s*(?:大卡|千卡|kcal|卡)/ig, ' ');
+      if (avoidStamp === controlStamp) text = text.replace(/(?:不吃|不想吃|忌口|忌|避免)[^，,。；;]{1,20}/g, ' ');
     }
     var budgetMax = els.budgetMax.value === '' ? null : Number(els.budgetMax.value);
     var goal = els.goal.value.trim();
@@ -427,6 +395,7 @@
       people: Number(els.people.value) || 1,
       budgetMin: Number(els.budgetMin.value) || 0,
       budgetMax: budgetMax,
+      maxCal: $('maxCal').value === '' ? null : Number($('maxCal').value),
       unlimited: els.unlimited.checked || budgetMax == null,
       goal: goal,
       avoid: currentAvoid(),
@@ -444,6 +413,7 @@
       els.people.value = r.people;
       els.people.dataset.touched = 'true';
     }
+    if (r.maxCal != null && $('maxCal')) $('maxCal').value = r.maxCal;
     if (r.unlimited) {
       if (!els.unlimited.checked) els.unlimited.checked = true;
       els.budgetMin.value = '';
@@ -462,6 +432,7 @@
       var should = !!avoidSet[input.value];
       if (input.checked !== should) input.checked = should;
     });
+    renderUnderstanding(plans);
   }
   function appendMessage(kind, text) {
     var node = document.createElement('div');
@@ -521,7 +492,6 @@
     }
     var query = mergeQuery();
     state.lastQuery = query;
-    state.lastSubmittedText = text;   // 记录本次提交的原文：下次提交时若控件改过、文本没动 → 以控件为准
     appendMessage('user', text || [query.people + ' 人', query.unlimited ? '预算不限' : '预算 ' + query.budgetMin + ' 至 ' + query.budgetMax + ' 元', query.goal].filter(Boolean).join(' · '));
     await runRecommendation(query, {
       announce: '我按你的条件搭好了三份：省钱聚餐、低卡高蛋白和新品尝鲜。每份都可以展开看热量与官方营养信息。',
@@ -540,7 +510,7 @@
     if (!plan) return;
     button.setAttribute('aria-expanded', 'true');
     panel.hidden = false;
-    panel.innerHTML = kind === 'calories' ? caloriePanel(plan) : kind === 'comboCompare' ? comboComparePanel(plan) : nutritionPanel(plan);
+    panel.innerHTML = kind === 'calories' ? caloriePanel(plan) : nutritionPanel(plan);
   }
   async function selectedAction(mode) {
     var plans = selectedPlanObjects();
@@ -856,6 +826,12 @@
 
   function bindEvents() {
     els.form.addEventListener('submit', submitRequest);
+    els.request.addEventListener('input', function () { els.request.dataset.actionAt = String(++state.actionSequence); });
+    els.avoid.addEventListener('change', function (event) { if (event.target.matches('input')) event.target.dataset.actionAt = String(++state.actionSequence); });
+    ['people', 'budgetMin', 'budgetMax', 'maxCal', 'unlimited', 'goal'].forEach(function (id) {
+      $(id).addEventListener('input', function () { this.dataset.actionAt = String(++state.actionSequence); });
+      $(id).addEventListener('change', function () { this.dataset.actionAt = String(++state.actionSequence); });
+    });
     els.request.addEventListener('input', function () { els.charCount.textContent = els.request.value.length + ' / 500'; });
     document.querySelectorAll('[data-step]').forEach(function (button) {
       button.addEventListener('click', function () {
@@ -921,9 +897,37 @@
         updateSelectionBar();
       }
     });
+    els.planGrid.addEventListener('change', function (event) {
+      if (!event.target.matches('[data-subpart-pref]')) return;
+      var saved = currentItemPrefs().filter(function (p) { return p.name !== event.target.dataset.name; });
+      if (event.target.value !== 'neutral') saved.push({ name: event.target.dataset.name, mention: event.target.dataset.name, code: event.target.dataset.code || null, pref: event.target.value, source: 'panel' });
+      var query = Object.assign({}, state.lastQuery || mergeQuery(), { itemPrefs: saved });
+      state.lastQuery = query;
+      runRecommendation(query, { scroll: false });
+    });
     $('calculateSelected').addEventListener('click', function () { selectedAction('calculate'); });
     $('summarySelected').addEventListener('click', function () { selectedAction('summary'); });
     $('splitSelected').addEventListener('click', openSplitPanel);
+    $('itemPrefsPanel').addEventListener('change', function (event) {
+      if (!event.target.matches('[data-item-pref]')) return;
+      var base = currentItemPrefs();
+      var key = event.target.dataset.name;
+      base = base.filter(function (p) { return p.name !== key; });
+      if (event.target.value !== 'neutral') base.push({ name: key, mention: event.target.dataset.mention || key, pref: event.target.value, source: 'panel' });
+      var query = Object.assign({}, state.lastQuery || mergeQuery(), { itemPrefs: base });
+      state.lastQuery = query;
+      runRecommendation(query, { scroll: false });
+    });
+    $('itemPrefsPanel').addEventListener('click', function (event) {
+      if (!event.target.closest('#addItemPref')) return;
+      var name = $('itemPrefName').value.trim();
+      if (!name) { $('itemPrefName').focus(); return; }
+      var prefs = currentItemPrefs().filter(function (p) { return p.name !== name; });
+      prefs.push({ name: name, mention: name, pref: $('itemPrefValue').value, source: 'panel' });
+      var query = Object.assign({}, state.lastQuery || mergeQuery(), { itemPrefs: prefs });
+      state.lastQuery = query;
+      runRecommendation(query, { scroll: false });
+    });
     $('closeSplit').addEventListener('click', function () { $('splitPanel').hidden = true; });
     $('splitMembers').addEventListener('input', renderSplitMembers);
     $('splitMode').addEventListener('change', renderSplitMembers);

@@ -278,34 +278,6 @@ input[type="number"], input[type="text"] { min-height: 44px; }
 .combo-save { display:block; margin-top:4px; font-size:10px; font-weight:800; color:#176647; }
 .combo-partial { display:block; margin-top:4px; font-size:10px; font-weight:700; color:#817b72; }
 .plan-label.combo { color:#176647; background:#dff3e7; }
-/* 来源角标（第 8 轮）：整份套餐 / 单独点 / 套餐子项转单点——口径以 service 的 sourceType 为准 */
-.src-badge { display:block; margin-top:4px; font-size:10px; font-weight:800; }
-.src-combo { color:#8a5a13; }
-.src-single { color:#4d5b6b; }
-.src-part { color:#176647; }
-/* 模式标签：全单点 / 宵夜 */
-.plan-label.mode { color:#5b3e8a; background:#efe7f7; }
-/* 「我理解成了」摘要（第 9 轮）：置顶的解析确认入口 */
-.notice-understand { border-color:#b8c9e0 !important; background:#eef4fb !important; color:#2c4a6b !important; font-weight:700; }
-/* 热量上限徽标（第 9 轮 maxCal）：超标黄牌，不谎报达标 */
-.cal-cap { align-self:center; padding:5px 8px; border-radius:99px; font-size:11px; font-weight:800; white-space:nowrap; color:#3c5634; background:#e9f2e3; }
-.cal-cap.cal-over { color:#8a5a13; background:#ffedc4; }
-/* 权重回显（第 8 轮） */
-.weights-pill { align-self:center; padding:5px 8px; border-radius:99px; font-size:10px; font-weight:700; white-space:nowrap; color:#5b4a2a; background:#f6efdd; }
-/* 混合方案人话总结（第 8 轮） */
-.mix-summary { margin:0 14px 4px; border:1px dashed #e0d2b6; border-radius:10px; background:#fdfaf3; padding:9px 12px; }
-.mix-summary h4 { margin:0 0 4px; font-size:11px; color:var(--muted); }
-.mix-summary p { margin:3px 0 0; font-size:12px; line-height:1.7; }
-.tradeoff-line { color:#6b4d12; }
-.tradeoff-line::before { content:"↔ "; font-weight:800; }
-/* 四维对比面板（第 8 轮） */
-.compare-card { border:1px solid #e8ddcb; border-radius:10px; background:#fcf8ef; padding:10px 12px; margin-top:8px; }
-.compare-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px; }
-.compare-head strong { font-size:12px; }
-.compare-rows { display:grid; gap:3px; }
-.compare-row { display:grid; grid-template-columns:64px 1fr; gap:8px; font-size:11px; line-height:1.6; }
-.compare-row span:first-child { color:var(--muted); font-weight:700; }
-.compare-note { margin:8px 2px 0; font-size:10px; line-height:1.7; color:var(--muted); }
 /* 多人拆单 · 分人用券（问题一） */
 .assign-block { margin-top:14px; border-top:1px dashed #e3d7c3; padding-top:12px; }
 .assign-head h4 { margin:2px 0 0; font-size:13px; }
@@ -329,6 +301,36 @@ input[type="number"], input[type="text"] { min-height: 44px; }
 .assign-notes { margin:10px 0 0; padding-left:16px; font-size:10px; line-height:1.7; color:var(--muted); }
 /* 点餐方式 / 用餐方式下拉（语言对齐 split-controls） */
 .assign-controls label { display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:700; color:var(--ink); }
+.understanding-line { margin:12px 0; padding:10px 13px; border:1px solid #dfc7ad; border-radius:10px; background:#fff8e9; color:#493424; font-size:13px; line-height:1.7; }
+.item-prefs-panel { margin:12px 0; padding:12px; border:1px solid #e6dac8; border-radius:12px; background:#fffdf8; }
+.item-prefs-panel summary,.item-subparts summary,.combo-comparison summary { cursor:pointer; font-weight:800; color:var(--ink); }
+.item-prefs-panel p,.item-subparts small,.combo-compare-row p,.official-boundary { color:var(--muted); font-size:11px; line-height:1.6; }
+.item-pref-row,.item-pref-add,.item-subparts label { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:7px 0; border-bottom:1px solid #f0e8db; }
+.item-pref-row small { display:block; color:var(--muted); font-size:10px; }
+.item-pref-row select,.item-pref-add select,.item-subparts select { min-height:32px; border:1px solid #dfc7ad; border-radius:7px; background:#fff; color:var(--ink); padding:4px 7px; }
+.item-pref-add input { flex:1; min-width:100px; padding:8px; border:1px solid #dfc7ad; border-radius:7px; }
+.source-type-badge { display:inline-block; margin:3px 4px 3px 0; padding:2px 6px; border-radius:99px; background:#f1e7d6; color:#65442d; font-size:9px; font-weight:800; }
+.source-type-badge.comboPart { background:#eee4f6; color:#623d7b; }
+.item-subparts { margin-top:5px; padding:7px; border:1px solid #e8ddcb; border-radius:7px; background:#fffaf0; }
+.plan-item.has-subparts { flex-basis:190px; grid-template-columns:30px minmax(0,1fr); align-items:start; }
+.plan-item.has-subparts .item-subparts { grid-column:1 / -1; width:100%; }
+.item-subparts summary { font-size:10px; }
+.item-subparts label { font-size:10px; }
+.mix-summary { margin:8px 0; padding:8px 10px; border-radius:8px; background:#f4f0e8; color:#493424; font-size:11px; line-height:1.6; }
+.plan-weights { margin:5px 0; color:var(--muted); font-size:10px; }
+.combo-comparison { margin-top:8px; padding:9px; border:1px solid #e6dac8; border-radius:9px; background:#fffaf0; }
+.combo-comparison summary { font-size:11px; }
+.combo-compare-row { margin-top:9px; padding-top:8px; border-top:1px solid #eadfce; }
+.combo-compare-row h4 { margin:0 0 6px; font-size:11px; }
+.combo-compare-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:5px; }
+.combo-compare-grid div { display:grid; gap:4px; padding:7px; border-radius:6px; background:#f6f1e8; font-size:10px; }
+.combo-compare-grid span { line-height:1.5; }
+.preview-mark { color:#82520b; }
+.tradeoff-list { padding-left:17px; color:#594832; font-size:10px; line-height:1.6; }
+.official-boundary { margin-bottom:0; font-weight:700; }
+.maxcal-note { margin:7px 0 0; color:#376246; font-size:11px; font-weight:800; }
+.maxcal-note.over { color:#80520e; }
+.maxcal-note.preview { color:#80520e; }
 .assign-controls select { min-height:36px; padding:6px 10px; border:1px solid #dfc7ad; border-radius:9px; background:#fff; color:#35251a; font:inherit; font-size:11px; cursor:pointer; }
 /* 券账本：每张券一行——用出 / 没排上 / 不适用 / 无收益，以及为什么 */
 .assign-ledger { margin-top:12px; border-top:1px dashed #e3d7c3; padding-top:10px; }

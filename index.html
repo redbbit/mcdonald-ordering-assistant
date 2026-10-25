@@ -66,6 +66,7 @@
                   <div class="budget-row"><label class="sr-only" for="budgetMin">预算下限</label><input id="budgetMin" type="number" min="0" placeholder="最低" inputmode="decimal"><span class="range-dash">—</span><label class="sr-only" for="budgetMax">预算上限</label><input id="budgetMax" type="number" min="0" placeholder="最高" inputmode="decimal"><label class="unlimited-toggle"><input id="unlimited" type="checkbox"><span>不限</span></label></div>
                 </fieldset>
                 <label class="field-group goal-group"><span class="field-label">这顿的目标</span><input id="goal" type="text" maxlength="80" placeholder="随便写：减脂、吃饱、好消化…"></label>
+                <label class="field-group"><span class="field-label">全单热量上限（kcal）</span><input id="maxCal" type="number" min="1" max="9999" placeholder="不限制"></label>
                 <fieldset class="field-group avoid-group"><legend class="field-label">忌口 / 不想吃</legend><div id="avoidOptions" class="tag-list" aria-label="选择忌口"><span class="soft-placeholder">正在读取菜单选项…</span></div></fieldset>
               </div>
               <div class="goal-chips" id="goalChips" aria-label="常见目标"></div>
@@ -84,6 +85,8 @@
         <section class="results-section" id="resultsSection" aria-labelledby="resultsTitle" hidden>
           <div class="results-heading"><div><div class="eyebrow"><span class="eyebrow-line"></span>按你的条件现配</div><h2 id="resultsTitle">三种好吃的选择</h2></div><span id="resultCount" class="result-count"></span></div>
           <div class="notice-stack" id="noticeStack" aria-live="polite"></div>
+          <div class="understanding-line" id="understandingLine" aria-live="polite" hidden></div>
+          <section class="item-prefs-panel" id="itemPrefsPanel" hidden aria-label="套餐子项偏好"></section>
           <div class="plan-grid" id="planGrid"></div>
           <div class="selection-bar" id="selectionBar" hidden>
             <div><strong id="selectedCount">已选 0 份</strong><span>清单会列出菜品与金额，不会替你下单</span></div>

@@ -125,7 +125,7 @@
         avoid: input.avoid ? input.avoid.slice() : null,
         dining: input.dining || null,
         orderMode: input.orderMode || null,
-        maxCal: input.maxCal != null ? +input.maxCal : null,
+        maxCal: input.maxCal != null && isFinite(+input.maxCal) && +input.maxCal > 0 ? +input.maxCal : null,
         exclude: input.exclude ? input.exclude.slice() : null,
         itemPrefs: input.itemPrefs ? input.itemPrefs.slice() : null,
         weights: input.weights || null
@@ -139,7 +139,7 @@
       if (input.taste) q.taste = input.taste.slice();
       if (input.dining) q.dining = input.dining;
       if (input.orderMode) q.orderMode = input.orderMode;
-      if (input.maxCal != null) q.maxCal = input.maxCal;
+      if (input.maxCal != null && isFinite(+input.maxCal) && +input.maxCal > 0) q.maxCal = +input.maxCal;
       if (input.exclude) q.exclude = input.exclude.slice();
       if (input.itemPrefs) q.itemPrefs = input.itemPrefs.slice();
       if (input.weights) q.weights = input.weights;
@@ -183,7 +183,7 @@
      * 只认明确数字；「低卡」交给 goal 解析（normGoal），不在这里编默认值。 */
     var mc = /(?:不超过|最多|以内|控制在|限制在)?\s*([0-9]{2,4})\s*(?:大卡|千卡|kcal|卡)/i.exec(t);
     if (mc) { q.maxCal = +mc[1]; q.matched.maxCal = true; q.sources.maxCal = 'text'; }
-    else if (ctrl && ctrl.maxCal != null) { q.maxCal = ctrl.maxCal; q.sources.maxCal = 'control'; }
+    else if (ctrl && ctrl.maxCal != null && isFinite(+ctrl.maxCal) && +ctrl.maxCal > 0) { q.maxCal = +ctrl.maxCal; q.sources.maxCal = 'control'; }
 
     /* 目标：整句留给用户，量化由引擎 normGoal 负责 */
     if (t) q.goal = q.goal || t;
@@ -480,6 +480,7 @@
       dining: q.dining,
       orderMode: q.orderMode,
       modes: { singlesOnly: q.modes.singlesOnly, lateNight: q.modes.lateNight },
+      maxCal: q.maxCal,
       exclude: q.exclude.slice(),
       // 子项偏好快照：UI 勾选面板据此回填（用户能看到「系统理解成了什么」）
       itemPrefs: q.itemPrefs.map(function (pp) {
