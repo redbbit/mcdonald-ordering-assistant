@@ -19,6 +19,7 @@
       <div class="topbar-tools">
         <div class="top-meta" id="metaLine" aria-live="polite"><span class="meta-dot"></span><span>正在读取门店快照…</span></div>
         <label class="slot-switch"><span>菜单时段</span><select id="slotSelector" aria-label="切换菜单时段" disabled><option>读取快照…</option></select></label>
+        <button class="mode-switch" id="modeSwitch" type="button" aria-haspopup="dialog" aria-controls="modeDialog" title="切换在线 MCP / 离线预演，查看配置教程"><span class="mode-dot" id="modeDot" aria-hidden="true"></span><span id="modeSwitchText">在线模式教程</span></button>
         <button class="projector-toggle" id="projectorToggle" type="button" aria-pressed="false">投屏大字</button>
         <button class="guide-trigger" id="guideOpen" type="button" aria-haspopup="dialog" aria-controls="guideDialog"><span class="guide-icon" aria-hidden="true">?</span><span>使用说明</span></button>
       </div>
@@ -228,7 +229,63 @@
     </div>
   </dialog>
 
+  <dialog class="mode-dialog" id="modeDialog" aria-labelledby="modeTitle">
+    <div class="mode-head">
+      <div>
+        <p class="mode-kicker">两种运行模式</p>
+        <h2 id="modeTitle">在线 MCP 版 · 配置教程</h2>
+      </div>
+      <button type="button" class="mode-x" id="modeClose" aria-label="关闭">✕</button>
+    </div>
+    <div class="mode-body">
+      <p class="mode-now" id="modeNow">当前：离线预演</p>
+      <table class="mode-table">
+        <thead><tr><th>能力</th><th>离线预演<br><span>双击 index.html</span></th><th>在线 MCP<br><span>本机起服务 + Token</span></th></tr></thead>
+        <tbody>
+          <tr><td>菜单 / 活动</td><td>随包快照</td><td>实时拉官方</td></tr>
+          <tr><td>价格</td><td>快照价，标「预演」</td><td>官方实算 + requestId</td></tr>
+          <tr><td>优惠券</td><td>快照券，收益为估算</td><td>读你账号当前可用券</td></tr>
+          <tr><td>下单</td><td>不做</td><td>同样不做，只给方案</td></tr>
+        </tbody>
+      </table>
+
+      <h3 class="mode-h3">快速版（3 步，约 1 分钟）</h3>
+      <ol class="mode-steps">
+        <li>在项目根目录新建 <code>.env</code>，写一行：<code>MCD_MCP_TOKEN=你的Token</code></li>
+        <li>在该目录运行：<code>python server.py</code></li>
+        <li>浏览器打开 <code>http://127.0.0.1:4317/</code>，顶部变「在线 MCP」即成功</li>
+      </ol>
+      <div class="mode-actions">
+        <button type="button" class="mode-cta" id="modeConnect">检测并连接到在线模式</button>
+        <span class="mode-hint" id="modeProbe">先帮你探测本机服务有没有起来</span>
+      </div>
+
+      <details class="mode-more">
+        <summary>详细教程与常见报错</summary>
+        <h4>① Token 从哪来</h4>
+        <p>麦当劳 MCP 的访问凭证，绑定你自己的麦当劳账号。本工具读到的券、门店、价格，全部属于这个账号——所以「别人账号里的券」它读不到。</p>
+        <h4>② .env 长什么样</h4>
+        <pre>MCD_MCP_TOKEN=&lt;你的 Token 粘在这里&gt;</pre>
+        <p>放在 <code>server.py</code> 同目录，文件名就叫 <code>.env</code>（<b>不是</b> <code>.env.txt</code>）。</p>
+        <h4>③ 常见报错</h4>
+        <ul>
+          <li><b>打开还是离线预演</b>：说明双击了 index.html，改用 <code>http://127.0.0.1:4317/</code> 打开。</li>
+          <li><b>提示找不到 Token / 401</b>：<code>.env</code> 存成了 txt，或 Token 已过期。</li>
+          <li><b>端口被占</b>：4317 已被别的进程占用，关掉旧进程再启动。</li>
+          <li><b>能开页面但拿不到数据</b>：本机到官方网络不通时会自动降级为离线预演，不会假装有数据。</li>
+        </ul>
+        <h4>④ 安全边界</h4>
+        <p>Token 只写在你本地 <code>.env</code>，不进前端代码、不进仓库、不经过第三方；发布检查每次都会扫一遍。</p>
+      </details>
+    </div>
+    <div class="dialog-foot">
+      <span>在线模式只读取与比价，<b>不会替你下单</b>。</span>
+      <button type="button" id="modeDone">知道了</button>
+    </div>
+  </dialog>
+
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
   <script src="data/menu_data.js"></script>
   <script src="data/menu_data_night.js"></script>
   <script src="data/menu_data_latenight.js"></script>

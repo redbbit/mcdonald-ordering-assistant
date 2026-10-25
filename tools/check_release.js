@@ -43,6 +43,13 @@ const SECRET_PATTERNS = [
  *  - 注释里明说"本项目不使用 create-order"，是加分项，不是违规 */
 const NS_HOSTS = ['www.w3.org'];
 const SAFE_MENTION = /(禁止|不使用|不用|不得|绝无|不调用|没有|don'?t|no )/i;
+/* 教程里的占位示例（「你的 Token」「<你的 Token>」）不是凭证：
+ * 真正泄露的是值，不是变量名。仅当所有命中行都带占位标记时才放行。 */
+const PLACEHOLDER = /(你的\s*Token|<\s*你的|YOUR[_-]?TOKEN|<your|填写你的|占位)/i;
+function onlyPlaceholders(s, re) {
+  const lines = s.split('\n').filter(function (l) { return new RegExp(re.source, 'i').test(l); });
+  return lines.length > 0 && lines.every(function (l) { return PLACEHOLDER.test(l); });
+}
 
 /* 去掉注释后再查红线：真正执行的代码里绝不能出现下单能力 */
 function stripComments(s) {
@@ -186,6 +193,7 @@ for (const f of scanFiles) {
       continue;
     }
     const m = stripComments(s).match(new RegExp(p.re.source, 'gi'));
+    if (onlyPlaceholders(stripComments(s), p.re)) { ok(f + ' 只有操作教程的占位示例，无真实凭证'); continue; }
     bad(f, p.msg + (m ? ' ×' + m.length : ''));
     hit = true;
   }
@@ -233,6 +241,7 @@ for (const f of scanFiles) {
 // 白名单域名允许以 CSP 通配形式出现（如 *.mcd.cn），但 *.com 这种过宽的一律拒绝
 function hostAllowed(host) {
   if (IMG_HOSTS.includes(host)) return true;
+  if (LOCAL_HOSTS.includes(host)) return true;   // 本机回环：本地 server.py 供图，不是外链
   if (!/^\*\./.test(host)) return false;
   const labels = host.slice(2).split('.');
   if (labels.length < 2) return false;

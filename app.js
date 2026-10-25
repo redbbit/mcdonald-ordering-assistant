@@ -370,6 +370,95 @@
     }
   }
 
+  /* ================= 在线 / 离线模式切换（第 11 轮） =================
+   * 离线页里也能一键连到在线 MCP：点按钮 → 探测 127.0.0.1:4317 → 通了直接跳过去。
+   * 在线页想回离线，用 ?offline=1 强制走快照，不必装两套文件。 */
+  var MODE_HOST = 'http://127.0.0.1:4317';
+
+  function isOfflineForced() {
+    return /(?:[?&])offline=1(?:&|$)/.test(window.location.search);
+  }
+  function currentMode() {
+    return (state.adapter && !state.degraded) ? 'online' : 'offline';
+  }
+  function renderModeSwitch() {
+    var btn = $('modeSwitch'), txt = $('modeSwitchText'), dot = $('modeDot');
+    if (!btn) return;
+    var online = currentMode() === 'online';
+    btn.classList.toggle('is-online', online);
+    if (txt) txt.textContent = online ? '在线 MCP · 可切离线' : '在线模式教程';
+    if (dot) dot.className = 'mode-dot' + (online ? ' on' : '');
+    btn.title = online
+      ? '当前走官方实时数据，点此切回离线预演'
+      : '当前为离线预演，点此看在线版配置教程并一键连接';
+  }
+  function openModeDialog() {
+    var dlg = $('modeDialog');
+    if (!dlg) return;
+    var now = $('modeNow');
+    if (now) {
+      now.textContent = currentMode() === 'online'
+        ? '当前：在线 MCP · 官方实时菜单与实算价格'
+        : (window.location.protocol === 'file:'
+            ? '当前：离线预演 · 本地双击打开，不发任何网络请求'
+            : '当前：离线预演 · 页面带 offline 参数或后端未就绪');
+    }
+    var cta = $('modeConnect');
+    if (cta) {
+      cta.textContent = currentMode() === 'online' ? '切回离线预演' : '检测并连接到在线模式';
+      if (currentMode() !== 'online') modeForceConnect = false;
+    }
+    dlg.removeAttribute('hidden');
+    if (typeof dlg.showModal === 'function' && !dlg.open) dlg.showModal();
+  }
+  function closeModeDialog() {
+    var dlg = $('modeDialog');
+    if (!dlg) return;
+    if (typeof dlg.close === 'function' && dlg.open) dlg.close();
+  }
+  function setProbeHint(text, tone) {
+    var el = $('modeProbe');
+    if (!el) return;
+    el.textContent = text;
+    el.className = 'mode-hint' + (tone ? ' ' + tone : '');
+  }
+  /* file:// → http 用 no-cors 探活：主机有响应就算通，不读内容，避免 CORS 报错 */
+  function probeOnline() {
+    if (typeof fetch !== 'function') return Promise.resolve(false);
+    var ctrl = (typeof AbortController === 'function') ? new AbortController() : null;
+    var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, 1600);
+    return fetch(MODE_HOST + '/api/health', {
+      mode: 'no-cors', cache: 'no-store', signal: ctrl ? ctrl.signal : undefined
+    }).then(function () { clearTimeout(timer); return true; })
+      .catch(function () { clearTimeout(timer); return false; });
+  }
+  /* 探测只是「尽力而为」：Chrome 对 file:// → 127.0.0.1 的请求有 Private Network
+   * Access 限制，服务起着也可能探不到。所以探测失败不做硬门槛——按钮变成
+   * 「仍然尝试连接」，让用户自己决定，避免把人挡在门外。 */
+  var modeForceConnect = false;
+  function connectOnline() {
+    if (currentMode() === 'online') {
+      window.location.href = window.location.pathname + '?offline=1';
+      return;
+    }
+    if (modeForceConnect) {
+      window.location.href = MODE_HOST + '/';
+      return;
+    }
+    setProbeHint('正在探测 127.0.0.1:4317 …', '');
+    probeOnline().then(function (ok) {
+      if (ok) {
+        setProbeHint('检测到本机服务，正在切到在线 MCP …', 'ok');
+        window.location.href = MODE_HOST + '/';
+        return;
+      }
+      modeForceConnect = true;
+      var cta = $('modeConnect');
+      if (cta) cta.textContent = '仍然尝试连接在线模式';
+      setProbeHint('没探测到 127.0.0.1:4317（浏览器对本地文件的探测可能误判）。若你已运行 python server.py，再点一次即可直接连接；没启动的话会看到浏览器的无法访问页，返回即可。', 'bad');
+    });
+  }
+
   function hintChipsHtml() {
     return PROMPT_EXAMPLES.map(function (ex) {
       return '<button type="button" class="suggestion-chip" data-hint-text="' + attr(ex.text) + '">' + esc(ex.label) + '</button>';
@@ -1073,6 +1162,28 @@
       runRecommendation(query, { scroll: false, prefUpdate: true });
     });
     /* 引导页（第 10 轮）：右上角入口 + 关闭（遮罩点击 / ESC / 按钮） */
+    var modeBtn = $('modeSwitch');
+    if (modeBtn) modeBtn.addEventListener('click', function () {
+      if (currentMode() === 'online') { connectOnline(); return; }
+      openModeDialog();
+      setProbeHint('正在探测 127.0.0.1:4317 …', '');
+      probeOnline().then(function (ok) {
+        setProbeHint(ok ? '检测到本机服务已启动，点下方按钮即可切到在线模式'
+          : '暂时没探测到 127.0.0.1:4317（本地文件的探测可能误判）。已启动服务的话，点下方按钮仍可连接。', ok ? 'ok' : '');
+      });
+    });
+    ['modeClose', 'modeDone'].forEach(function (id) {
+      var b = $(id);
+      if (b) b.addEventListener('click', closeModeDialog);
+    });
+    var modeDlg = $('modeDialog');
+    if (modeDlg) {
+      modeDlg.addEventListener('click', function (event) {
+        if (event.target === modeDlg) closeModeDialog();
+      });
+    }
+    var modeCta = $('modeConnect');
+    if (modeCta) modeCta.addEventListener('click', connectOnline);
     $('guideOpen').addEventListener('click', openGuide);
     $('guideClose').addEventListener('click', closeGuide);
     $('guideDone').addEventListener('click', closeGuide);
@@ -1143,7 +1254,7 @@
       state.activeSlot = state.slots.length ? (state.slots[0].key || '') : '';
       renderSlotSelector();
       var adapterOptions = {};
-      if (window.McAdvisorData) {
+      if (window.McAdvisorData && !isOfflineForced()) {
         if (window.location.protocol === 'file:' && typeof McAdvisorData.OfflineAdapter === 'function') {
           state.adapter = new McAdvisorData.OfflineAdapter(state.activeSlot ? { slot: state.activeSlot } : {});
           state.degraded = true;
@@ -1163,6 +1274,7 @@
       S = McAdvisor.createService(adapterOptions);
       await readServiceSnapshot();
       renderPromptHints();            // 输入引导示例 chips
+      renderModeSwitch();             // 顶部模式按钮（在线 / 离线）
       initRotation();
       if (!guideSeen()) openGuide();  // 首次访问自动弹出引导页
     } catch (error) {
