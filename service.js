@@ -1229,12 +1229,22 @@
          *   ① core.orders = 支付单元（第 N 单）——**券挂在这里**，一单一张券
          *   ② core.built  = 成本归属（每人一份）——**只用于内部转账**，不挂券
          * 之前的做法是把券挂到「人」上，等于宣称「每个人都有号主的券」，这是错的。 */
-        core.orders = E.buildOrdersByCouponCount(planItems, core.ordersWanted).orders;
-        core.built = E.buildSubOrders(planItems, members, owners);
+        /* 兼容保护：如果 engine.js 是旧版（没有 buildOrdersByCouponCount），
+         * 不要直接抛 TypeError 把整个拆单面板打挂，退回旧的按人拆单（行为老但可用），
+         * 并在 notes 里说清楚「引擎版本不匹配」。混装文件时用户至少能用。 */
+        core.engineOutdated = (typeof E.buildOrdersByCouponCount !== 'function');
+        if (core.engineOutdated) {
+          core.built = E.buildSubOrders(planItems, members, owners);
+          core.orders = core.built.subOrders;
+          core.splitSubtotal = core.built.total;
+        } else {
+          core.orders = E.buildOrdersByCouponCount(planItems, core.ordersWanted).orders;
+          core.built = E.buildSubOrders(planItems, members, owners);
+          core.splitSubtotal = round(core.orders.reduce(function (s, o) { return s + o.subtotal; }, 0));
+        }
         core.couponResult = { totalCut: 0 };
         if (eligible.length) core.couponResult = E.optimizeCoupons(core.orders, eligible, DISHES);
         core.couponsUsedCount = core.orders.filter(function (o) { return o.coupon; }).length;
-        core.splitSubtotal = round(core.orders.reduce(function (s, o) { return s + o.subtotal; }, 0));
         // 合单参照：一整单用它能用的最好的那张券（同样只是估算）
         core.combinedCoupon = null; core.combinedCut = 0;
         eligible.forEach(function (c) {
@@ -1357,6 +1367,9 @@
           '券收益为券面规则估算：官方 available-coupons 不返回券 code，无法代入 calculate-price 真实试算；领取与核销请在麦当劳 APP / 小程序完成',
           '每单最多用 1 张券：官方未提供叠加规则，不假设可以叠'
         ];
+        if (core.engineOutdated) {
+          notes.push('⚠️ 当前 engine.js 是旧版本（缺少 buildOrdersByCouponCount）：拆单已退回「按人拆单」旧口径，页面仍可用；请把 engine.js 和 service.js 一起更新到同一版本，否则用券口径会不一致');
+        }
         if (dining === 'delivery') {
           notes.push('外送单：官方 calculate-price 需 orderType=2 且带地址 beCode；配送费/餐盒费以官方返回为准，离线快照只有到店价、外送侧未估算');
         } else if (dining === 'dineIn') {
