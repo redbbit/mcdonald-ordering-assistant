@@ -344,6 +344,32 @@
     return out;
   }
 
+  /* 子项偏好重算的忙碌态（GPT review 补充）：改完子项 → 面板变灰 + 「正在重新搭配…」，
+   * 失败时保留当前方案并提示可重试，不让用户以为没反应。 */
+  function setPreferenceUpdateState(active, failed) {
+    var panel = $('itemPrefsPanel');
+    if (!panel) return;
+    if (active) {
+      panel.setAttribute('aria-busy', 'true');
+      panel.classList.add('prefs-loading');
+      var status = document.createElement('p');
+      status.className = 'prefs-status';
+      status.setAttribute('role', 'status');
+      status.textContent = '正在重新搭配…';
+      panel.appendChild(status);
+      panel.querySelectorAll('input,select,button').forEach(function (control) { control.disabled = true; });
+      return;
+    }
+    panel.removeAttribute('aria-busy');
+    panel.classList.remove('prefs-loading');
+    panel.querySelectorAll('input,select,button').forEach(function (control) { control.disabled = false; });
+    var statusNode = panel.querySelector('.prefs-status');
+    if (statusNode) {
+      if (failed) statusNode.textContent = '重新搭配失败，当前方案仍保留；调整条件后可再试。';
+      else statusNode.remove();
+    }
+  }
+
   function hintChipsHtml() {
     return PROMPT_EXAMPLES.map(function (ex) {
       return '<button type="button" class="suggestion-chip" data-hint-text="' + attr(ex.text) + '">' + esc(ex.label) + '</button>';
@@ -547,6 +573,8 @@
     options = options || {};
     var revision = state.slotRevision;
     setBusy(true);
+    if (options.prefUpdate) setPreferenceUpdateState(true, false);
+    var requestFailed = false;
     try {
       var plans = await S.recommendPlans(query);
       if (revision !== state.slotRevision) return;
@@ -573,9 +601,11 @@
       if (revision !== state.slotRevision) return;
       els.error.textContent = error && error.message ? error.message : '这次没有找到合适的组合，请稍微调整预算或忌口再试一次。';
       els.error.hidden = false;
+      requestFailed = true;
       if (options.announceError) appendMessage('assistant', '这组条件暂时没有合适组合。可以放宽预算或减少忌口，再试一次。');
     } finally {
       if (revision === state.slotRevision) setBusy(false);
+      if (options.prefUpdate && revision === state.slotRevision) setPreferenceUpdateState(false, requestFailed);
     }
   }
   async function submitRequest(event) {
@@ -1012,7 +1042,7 @@
       if (event.target.value !== 'neutral') saved.push({ name: event.target.dataset.name, mention: event.target.dataset.name, code: event.target.dataset.code || null, pref: event.target.value, source: 'panel' });
       var query = Object.assign({}, state.lastQuery || mergeQuery(), { itemPrefs: saved });
       state.lastQuery = query;
-      runRecommendation(query, { scroll: false });
+      runRecommendation(query, { scroll: false, prefUpdate: true });
     });
     $('calculateSelected').addEventListener('click', function () { selectedAction('calculate'); });
     $('summarySelected').addEventListener('click', function () { selectedAction('summary'); });
@@ -1025,7 +1055,7 @@
       if (event.target.value !== 'neutral') base.push({ name: key, mention: event.target.dataset.mention || key, pref: event.target.value, source: 'panel' });
       var query = Object.assign({}, state.lastQuery || mergeQuery(), { itemPrefs: base });
       state.lastQuery = query;
-      runRecommendation(query, { scroll: false });
+      runRecommendation(query, { scroll: false, prefUpdate: true });
     });
     $('itemPrefsPanel').addEventListener('click', function (event) {
       if (!event.target.closest('#addItemPref')) return;
@@ -1035,7 +1065,7 @@
       prefs.push({ name: name, mention: name, pref: $('itemPrefValue').value, source: 'panel' });
       var query = Object.assign({}, state.lastQuery || mergeQuery(), { itemPrefs: prefs });
       state.lastQuery = query;
-      runRecommendation(query, { scroll: false });
+      runRecommendation(query, { scroll: false, prefUpdate: true });
     });
     /* 引导页（第 10 轮）：右上角入口 + 关闭（遮罩点击 / ESC / 按钮） */
     $('guideOpen').addEventListener('click', openGuide);

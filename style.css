@@ -504,3 +504,27 @@ input[type="number"], input[type="text"] { min-height: 44px; }
 .assign-orders h4, .assign-people h4 { margin: 0 0 7px; font-size: 11px; color: var(--brown); }
 .assign-people h4 { color: var(--muted); font-weight: 700; }
 .assign-modehint { margin: 6px 0 2px; padding: 8px 10px; border-radius: 8px; background: #f4f0e8; color: #594832; font-size: 10px; line-height: 1.7; }
+.item-prefs-panel[aria-busy="true"] { opacity:.78; }
+.prefs-status { margin:8px 0 0; padding:7px 9px; border-radius:7px; background:#fff4d9; color:#80520e; font-size:11px; font-weight:700; }
+@media (max-width:640px) {
+  .combo-compare-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .item-pref-add { flex-wrap:wrap; }
+  .item-pref-add input { flex-basis:100%; }
+  .item-pref-add button { flex:1 1 100%; }
+}
+/* First visit guide: match the cream dialog system and keep the footer reachable. */
+.guide-dialog { width:min(760px,calc(100vw - 28px)); max-height:min(90vh,820px); overflow:hidden; border:1px solid #e8ddcb; border-radius:17px; padding:0; background:#fcf8ef; color:var(--ink); box-shadow:0 28px 90px rgba(25,18,10,.4); }
+.guide-dialog::backdrop { background:rgba(28,20,14,.62); backdrop-filter:blur(3px); }
+.guide-body { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; max-height:55vh; overflow-y:auto; padding:16px 22px; }
+.guide-block,.guide-quickstart { min-width:0; padding:12px; border:1px solid #e8ddcb; border-radius:10px; background:#fffdf8; }
+.guide-block h3,.guide-quickstart > strong { display:block; margin:0 0 7px; color:#493424; font-size:12px; }
+.guide-block p,.guide-block li,.guide-quickstart li { color:#746958; font-size:10px; line-height:1.7; }
+.guide-block p,.guide-block ul,.guide-quickstart ol { margin:0; padding-left:17px; }
+.guide-boundary { background:#fff8e9; }
+.guide-quickstart { grid-column:1 / -1; }
+.guide-quickstart ol { margin:5px 0 9px; }
+@media (max-width:640px) {
+  .guide-dialog { max-height:92vh; }
+  .guide-body { grid-template-columns:1fr; max-height:62vh; padding:12px; }
+  .guide-quickstart { grid-column:auto; }
+}
