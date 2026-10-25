@@ -28,7 +28,8 @@ var SCENES = [
   '四维对比：价格 / 热量 / 蛋白质 / 口味；官方没给的一律写「官方未提供」',
   '子项面板可逐项改「想要 / 不想要」，改完自动重新搭配',
   '忌口优先：「不吃辣，想吃麦辣鸡腿堡」→ 明确提示冲突，且不会塞进方案',
-  '热量上限 + 多人拆单：券属于下单账号，按券数拆单、每单限一张，人只算内部转账'
+  '热量上限 + 多人拆单：券属于下单账号，按券数拆单、每单限一张，人只算内部转账',
+  '彩蛋：点「全场单点」先问「您确定单点吗」→ 确认后「震撼全场，你是那个靓仔」→ 再出全单点方案'
 ];
 
 function fmtSrt(ms) {
@@ -48,7 +49,7 @@ function mark() { marks.push(Date.now() - t0); }
   var browser = await playwright.chromium.launch({ channel: 'msedge', headless: true });
   var ctx = await browser.newContext({
     viewport: { width: 1440, height: 900 },
-    recordVideo: { dir: OUT_DIR, size: { width: 1440, height: 900 } }
+    recordVideo: { dir: OUT_DIR }   // 不要指定 size：指定后 Playwright 会降级成 800x500 并留黑边
   });
   page = await ctx.newPage();
   page.on('pageerror', function (e) { errors.push(e.message); });
@@ -129,8 +130,26 @@ function mark() { marks.push(Date.now() - t0); }
   await page.click('#splitSelected');
   await page.waitForTimeout(900);
   await page.click('#runAssign');
-  await page.waitForTimeout(7000);
+  await page.waitForTimeout(6000);
 
+  /* 彩蛋镜头：滚回输入区，点「全场单点」→ 确认 → 震撼全场 → 出全单点方案 */
+  mark();
+  await page.evaluate(function () {
+    var box = document.getElementById('guideChips');
+    if (box) box.scrollIntoView({ block: 'center' });
+  });
+  await page.waitForTimeout(1200);
+  var eggChip = page.locator('#guideChips .suggestion-chip', { hasText: '全场单点' });
+  if (await eggChip.count()) {
+    await eggChip.first().click();
+    await page.waitForTimeout(3000);          // 第一问：您确定单点吗
+    await page.click('#eggYes');
+    await page.waitForTimeout(3200);          // 第二句：震撼全场
+    await page.click('#eggOk');
+    await page.waitForTimeout(1500);          // 词条落进输入框
+    await submit(4500);                       // 全单点方案
+    await page.waitForTimeout(1800);
+  }
   await browser.close();
 
   var lines = [];
