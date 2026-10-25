@@ -12,6 +12,7 @@ import os
 import sys
 import re
 import time
+import subprocess
 from datetime import datetime
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -72,6 +73,63 @@ def verdict_and_count(name, text):
     return okmark, "—"
 
 
+def parse_original(text):
+    """MCP 返回是 markdown 包着的，真正的 JSON 在 `## Original Response` 之后。"""
+    i = text.find("## Original Response")
+    if i < 0:
+        return None
+    body = text[i + len("## Original Response"):].strip().strip("`").strip()
+    if body.lower().startswith("json"):
+        body = body[4:].strip()
+    try:
+        return json.loads(body)
+    except Exception:
+        return None
+
+
+def pick_combo(menu_text):
+    """从「当前时段」菜单里现挑一个真在售的套餐。
+
+    ⚠️ 千万别把商品 code 写死：麦当劳按时段换菜单，写死之后早上跑就会拿到
+    「未匹配到商品 / 已售罄或不可售」——证据上挂着叉还说自己调用了，那比
+    时间戳旧严重得多。宁可向当前菜单要一个，也不硬编码。
+    """
+    meals = ((parse_original(menu_text) or {}).get("data") or {}).get("meals") or {}
+    preferred, fallback = None, None
+    for code, v in meals.items():
+        nm = (v or {}).get("name") or ""
+        if "套餐" in nm and preferred is None:
+            preferred = (code, nm)
+        elif ("套餐" in nm or "组合" in nm) and fallback is None:
+            fallback = (code, nm)
+    return preferred or fallback
+
+
+def snapshot_stats():
+    """页面离线跑的是 data/menu_data.js 那份时段快照，这里数出它真实的条目数、
+    时段和抓取时间 —— 不写死 122，免得哪天快照变了数字还对不上。"""
+    out = {"n": 0, "slot": "", "fetched": "", "dishes": 0}
+    p = os.path.join(ROOT, "data", "menu_data.js").replace("\\", "/")
+    script = ("global.window={};require('%s');var d=window.MCD_DATA;"
+              "console.log(JSON.stringify({n:(d.dishes||[]).length,"
+              "slot:d.slotLabel||'',fetched:d.fetchedAt||''}));" % p)
+    try:
+        r = subprocess.run(["node", "-e", script], capture_output=True,
+                           text=True, timeout=30)
+        out.update(json.loads(r.stdout.strip().splitlines()[-1]))
+    except Exception:
+        pass
+    return out
+
+
+def count_images():
+    d = os.path.join(ROOT, "img")
+    try:
+        return len([f for f in os.listdir(d) if os.path.isfile(os.path.join(d, f))])
+    except Exception:
+        return 0
+
+
 def main():
     rows = []
     if not Mcd:
@@ -81,26 +139,16 @@ def main():
         m.initialize()
         print("已连接 MCP")
 
-        calls = [
-            ("query-nearby-stores",
-             {"beType": 1, "searchType": 2, "city": "广州市", "keyword": "中山大学广州校区南校园"},
-             "按位置查门店"),
-            ("query-meals", {"storeCode": STORE, "orderType": 1, "beType": 1}, "当前时段菜单"),
-            ("list-nutrition-foods", {}, "官方营养表"),
-            ("available-coupons", {}, "可领优惠券"),
-            ("campaign-calendar", {}, "官方活动日历"),
-            ("query-meal-detail", {"storeCode": STORE, "orderType": 1, "beType": 1,
-                                   "code": "9900005456"}, "套餐配方（含默认子项）"),
-            ("calculate-price", {"storeCode": STORE, "orderType": 1, "beType": 1,
-                                 "items": [{"productCode": "9900005456", "quantity": 1}]}, "官方算价"),
-        ]
-        for name, args, label in calls:
+        seen = {}
+
+        def run_call(name, args, label):
             t0 = time.time()
             try:
                 r = m.call(name, args)
                 txt = r["content"][0]["text"]
                 ms = int((time.time() - t0) * 1000)
                 okmark, cnt = verdict_and_count(name, txt)
+                seen[name] = txt
                 rows.append((name, label, len(txt), ms, okmark, cnt))
                 print("  %-22s %-14s %7d 字节 %5d ms  %s  %s"
                       % (name, label, len(txt), ms, okmark, cnt))
@@ -109,15 +157,46 @@ def main():
                 print("  %-22s 失败 %s" % (name, str(e)[:80]))
             time.sleep(0.3)
 
+        calls = [
+            ("query-nearby-stores",
+             {"beType": 1, "searchType": 2, "city": "广州市", "keyword": "中山大学广州校区南校园"},
+             "按位置查门店"),
+            ("query-meals", {"storeCode": STORE, "orderType": 1, "beType": 1}, "当前时段菜单"),
+            ("list-nutrition-foods", {}, "官方营养表"),
+            ("available-coupons", {}, "可领优惠券"),
+            ("campaign-calendar", {}, "官方活动日历"),
+        ]
+        for name, args, label in calls:
+            run_call(name, args, label)
+
+        # 套餐要跑完 query-meals 才挑得出来 —— 向「当前时段」菜单要一个真在售的，
+        # 不写死 code。写死就会跨时段失效，那是伪证，不是旧时间戳的问题。
+        combo = pick_combo(seen.get("query-meals", ""))
+        if combo:
+            code, nm = combo
+            print("  本时段在售套餐 → %s（%s）" % (nm, code))
+            run_call("query-meal-detail",
+                     {"storeCode": STORE, "orderType": 1, "beType": 1, "code": code},
+                     "套餐配方·%s" % nm)
+            run_call("calculate-price",
+                     {"storeCode": STORE, "orderType": 1, "beType": 1,
+                      "items": [{"productCode": code, "quantity": 1}]},
+                     "官方算价·%s" % nm)
+        else:
+            print("  ⚠ 当前菜单里解析不出套餐，跳过配方/算价两行，不伪造")
+
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    snap = snapshot_stats()
+    n_img = count_images()
     lines = []
     lines.append("# 麦当劳 MCP 调用证据")
     lines.append("")
     lines.append("> 本文件由 `tools/build_evidence.py` 自动生成，**记录内容不含 Token 与请求体原文**。")
     lines.append("> 生成时间：**%s**" % now)
     lines.append("")
-    lines.append("架构说明：**构建期调用 MCP → 落本地数据快照 → 运行时零网络请求**。")
-    lines.append("运行时不联网（保证会场断网可用），但每一次调用的返回都在构建期内真实发生过，下面就是记录。")
+    lines.append("架构说明：**浏览器从不直连 MCP**。离线模式读构建期落盘的快照（运行时零网络请求，保证会场断网可用）；在线模式经由本机 `server.py` 调用 MCP，Token 只活在该进程内存里。")
+    lines.append("")
+    lines.append("两种方式下调用都真实发生过，下面就是构建期的调用记录。在线模式每次调用还会额外返回 `requestId` 与时间戳，可在页面上直接出示。")
     lines.append("")
     lines.append("| 工具 | 用途 | 返回字节 | 耗时 | 结果 | 拿到什么 |")
     lines.append("|---|---|---:|---:|---|---|")
@@ -131,15 +210,18 @@ def main():
     lines.append("")
     lines.append("## 全量算价校验")
     lines.append("")
-    lines.append("- 门店 `%s` 当前菜单 **122 款**，每一款都单独调用过 `calculate-price`，全部通过。" % STORE)
+    lines.append("- 门店 `%s` 的 **%s时段快照**（抓于 %s）共 **%d 款**，每一款都单独调用过 `calculate-price`，全部通过。"
+                 % (STORE, snap["slot"] or "菜单", snap["fetched"] or "构建期", snap["n"]))
+    lines.append("- 这份快照就是页面离线模式读的数据（`data/menu_data.js`），与上面「当前时段菜单」一行不是同一次拉取：快照锁的是它自己那个时段的真实菜单，不因本次刷新而改变。")
     lines.append("- 校验结果写进了每款商品数据里（不可售的会被剔除，不进推荐候选池）。")
     lines.append("- **没有调用过 `create-order`，也不提供任何下单入口** —— 作品止于算价，下单要用户自己去麦当劳官方小程序/APP。")
     lines.append("")
     lines.append("## 图片来源")
     lines.append("")
-    lines.append("页面上的 142 张图全部来自 MCP 返回的官方 `image` 字段，构建期下载到本地 `img/`：")
+    lines.append("页面上的 %d 张图全部来自 MCP 返回的官方 `image` 字段，构建期下载到本地 `img/`："
+                 % n_img)
     lines.append("")
-    lines.append("- 商品图 122 张（`query-meals`）")
+    lines.append("- 商品图 %d 张（`query-meals`）" % (snap["n"] or 122))
     lines.append("- 优惠券图 3 张（`available-coupons`）")
     lines.append("- 活动图 17 张（`campaign-calendar`）")
     lines.append("")

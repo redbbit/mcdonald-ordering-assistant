@@ -156,12 +156,40 @@ console.log('===================================================================
       check(r.adapter.mode === 'online', '在线模式可用');
       const meta = await r.adapter.getMeta();
       check(!!meta.requestId, '在线响应带 requestId（可作调用证据）', meta.requestId);
-      const pr = await r.adapter.calculatePrice([{ code: '9900005456', qty: 1 }]);
-      check(pr.available === true && pr.simulated === false, '在线算价是真实结果', '¥' + pr.price);
-      check(pr.price > 0, '在线算价金额为正且单位已转元', '¥' + pr.price);
-      const probe = await r.adapter.probeItems(['9900005456', '0000000000']);
-      const hit = probe.items.filter(i => i.state === 'soldout').length;
-      check(hit > 0, '在线售罄探测能识别真实 60006', 'soldout ' + hit + ' 个');
+
+      // ⚠️ 商品 code 绝不能写死：麦当劳按时段换菜单，把下午茶时段的 code 拿到早上
+      // 打，官方只回 60006「已售罄或不可售」——那不是在线算价的 bug，是跨时段的
+      // 伪调用。这里向在线菜单现要一个「当前时段真在售」的来算价。
+      let liveCode = null, pr = null, tried = 0, priceErr = null;
+      try {
+        const md = ((await r.adapter.getMenu()) || {}).markdown || '';
+        const codes = [...new Set(
+          [...md.matchAll(/"code"\s*:\s*"([0-9]{5,})"/g)].map(x => x[1]))];
+        // 逐个试算，成了就用它：官方对不在当前时段的商品回 60006，换下一个即可。
+        // 不用 probeItems 来挑在售 —— probe 有 2.5s 硬超时，批量探测会被误判成
+        // 超时，把本来能过的用例带崩。
+        for (const c of codes.slice(0, 6)) {
+          tried++;
+          try {
+            pr = await r.adapter.calculatePrice([{ code: c, qty: 1 }]);
+            liveCode = c;
+            break;
+          } catch (e) { priceErr = e; pr = null; }
+        }
+      } catch (e) { priceErr = e; }
+
+      check(!!pr && pr.available === true && pr.simulated === false, '在线算价是真实结果',
+        pr ? ('¥' + pr.price + '（' + liveCode + '，试了 ' + tried + ' 个）')
+           : ('失败：' + ((priceErr && (priceErr.code || priceErr.message)) || '本时段无可售商品')));
+      check(!!pr && pr.price > 0, '在线算价金额为正且单位已转元', pr ? ('¥' + pr.price) : '—');
+
+      let probe = null, probeErr = null;
+      try {
+        probe = await r.adapter.probeItems([liveCode || '9900005456', '0000000000']);
+      } catch (e) { probeErr = e; }
+      const hit = probe ? probe.items.filter(i => i.state === 'soldout').length : 0;
+      check(hit > 0, '在线售罄探测能识别真实 60006',
+        probe ? ('soldout ' + hit + ' 个') : ('失败：' + (probeErr && (probeErr.code || probeErr.message))));
     }
   }
 
