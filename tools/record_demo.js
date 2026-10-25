@@ -21,8 +21,13 @@ var PAGE_URL = 'file:///' + path.join(ROOT, 'index.html').replace(/\\/g, '/');
   function log(s) { console.log('[' + new Date().toTimeString().slice(0, 8) + '] ' + s); }
 
   await page.goto(PAGE_URL);
-  await page.waitForTimeout(2500); // ⓿ 开场：首页 + 轮播
-  log('⓿ 开场');
+  /* ⓿ 开场：引导页首次访问自动弹出（原生 <dialog> 会拦截输入，必须先关掉） */
+  await page.waitForSelector('#guideDialog[open]', { timeout: 10000 }).catch(function () { log('⚠ 引导页未自动弹出'); });
+  await page.waitForTimeout(5000);
+  await page.click('#guideDone');
+  await page.waitForTimeout(1000);
+  await page.waitForTimeout(2000); // 首页 + 轮播
+  log('⓿ 开场 + 引导页');
 
   async function ask(text, holdMs) {
     await page.fill('#requestText', text);
@@ -32,8 +37,14 @@ var PAGE_URL = 'file:///' + path.join(ROOT, 'index.html').replace(/\\/g, '/');
     await page.waitForTimeout(holdMs == null ? 2200 : holdMs);
   }
 
-  // ① 基础配餐
-  await ask('3 个人，100 块以内，想吃得满足一点', 6500);
+  /* ① 基础配餐：先演示「点示例 chip」再提交（引导区在输入框正下方） */
+  await page.evaluate(function () { document.getElementById('requestText').scrollIntoView({ block: 'center' }); });
+  await page.waitForTimeout(700);
+  var firstHint = page.locator('#guideChips .suggestion-chip').first();
+  if (await firstHint.count()) { await firstHint.click(); await page.waitForTimeout(1600); }
+  await page.click('#submitButton');
+  await page.waitForFunction('document.querySelectorAll(".plan-card").length > 0', null, { timeout: 10000 });
+  await page.waitForTimeout(6500);
   var understand = await page.textContent('#understandingLine').catch(function () { return ''; });
   log('① 基础配餐（理解行：' + (understand || '').slice(0, 60) + '）');
 
