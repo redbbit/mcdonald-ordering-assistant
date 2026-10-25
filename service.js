@@ -679,7 +679,11 @@
 
     /* ---------------- getShowcase：右侧广告板数据源 ----------------
      * 排序：新品 → 活动促销 → 人气。全部带真实官方图，不带图的不要。 */
-    function getShowcase(limit) {
+    /* ⚠️ 参数兼容：app.js 在有 adapter 时按 getShowcase(slot, limit) 调用
+     * （online 模式会带上门店/时段），早期版本只传 limit。这里统一归一化，
+     * 否则 limit 会被塞成时段字符串，slice(0,'pm') 得 NaN → 轮播永远为空。 */
+    function getShowcase(limit, alt) {
+      if (typeof limit === 'string' || (limit === undefined && alt != null)) limit = alt;
       limit = limit || 12;
       var pool = DISHES.filter(function (d) {
         return d.ok === true && (d.imgLocal || d.img) && d.role !== 'merch';
