@@ -486,3 +486,15 @@ body.projector-mode .message p, body.projector-mode .campaign-card p { font-size
 }
 button { min-height: 44px; }
 input[type="number"], input[type="text"] { min-height: 44px; }
+
+/* ================= 输入引导 + 引导页（第 10 轮） ================= */
+/* 输入框下方：一行写法提示 + 可点的规范示例；出结果后追加「还缺什么」补全 chips */
+.prompt-guide { margin-top: 8px; }
+.guide-line { display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--muted); }
+.guide-kicker { padding: 2px 6px; border-radius: 99px; background: var(--gold-soft); color: var(--brown); font-size: 9px; font-weight: 800; letter-spacing: .04em; }
+.guide-tip { line-height: 1.6; }
+.guide-chips, .guide-examples { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+.guide-missing { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); }
+.guide-missing[hidden] { display: none; }
+.missing-kicker { font-size: 10px; color: var(--green); font-weight: 800; }
+.hint-gap { background: #f2f8f4; border-color: #b9d8c7; color: #2f5c46; }

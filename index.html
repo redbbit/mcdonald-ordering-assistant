@@ -20,6 +20,7 @@
         <div class="top-meta" id="metaLine" aria-live="polite"><span class="meta-dot"></span><span>正在读取门店快照…</span></div>
         <label class="slot-switch"><span>菜单时段</span><select id="slotSelector" aria-label="切换菜单时段" disabled><option>读取快照…</option></select></label>
         <button class="projector-toggle" id="projectorToggle" type="button" aria-pressed="false">投屏大字</button>
+        <button class="guide-trigger" id="guideOpen" type="button" aria-haspopup="dialog" aria-controls="guideDialog"><span class="guide-icon" aria-hidden="true">?</span><span>使用说明</span></button>
       </div>
     </header>
 
@@ -54,6 +55,12 @@
             <div class="prompt-wrap">
               <textarea id="requestText" rows="2" maxlength="500" placeholder="比如：4个人聚餐，预算 160 元，不吃辣，想尝尝新品…" autocomplete="off"></textarea>
               <div class="prompt-bottom"><span><span class="sparkle" aria-hidden="true">✳</span> 自然说就好，我来理解</span><span id="charCount">0 / 500</span></div>
+            </div>
+            <!-- 输入引导（第 10 轮）：示例 chips + 出结果后的「还缺什么」补全 chips -->
+            <div class="prompt-guide" aria-label="可以这样写">
+              <div class="guide-line"><span class="guide-kicker">TRY</span><span class="guide-tip">按「几人 · 预算 · 忌口 · 想吃什么」说，顺序随意</span></div>
+              <div class="guide-chips" id="guideChips"></div>
+              <div class="guide-missing" id="guideMissing" hidden></div>
             </div>
 
             <details class="preferences" open>
@@ -157,6 +164,68 @@
     <div class="dialog-head"><div><span class="section-kicker">SOMETHING EXTRA</span><h2 id="couponTitle">给这一餐添点优惠</h2><p>官方可领券信息 · 领取和核销请到小程序 / APP 完成</p></div><button class="icon-close" id="couponClose" type="button" aria-label="关闭优惠券">×</button></div>
     <div class="coupon-list" id="couponList"></div>
     <div class="dialog-foot"><span>券的可用范围与有效期以官方页面为准。</span><button type="button" id="couponDone">知道了</button></div>
+  </dialog>
+
+  <!-- 引导页（第 10 轮）：首次访问自动弹出，右上角「使用说明」可重开 -->
+  <dialog class="guide-dialog" id="guideDialog" aria-labelledby="guideTitle">
+    <div class="dialog-head">
+      <div><span class="section-kicker">GET STARTED</span>
+        <h2 id="guideTitle">这是什么，怎么用</h2>
+        <p>自然语言点餐助手 · 菜单与价格来自麦当劳官方 MCP · 页面不代下单</p>
+      </div>
+      <button class="icon-close" id="guideClose" type="button" aria-label="关闭使用说明">×</button>
+    </div>
+
+    <div class="guide-body">
+      <section class="guide-block">
+        <h3>① 它不是聊天机器人</h3>
+        <p>你给一句自然语言，它从<strong>当前时段的官方菜单</strong>里，配出三种吃法：省钱聚餐、低卡高蛋白、新品尝鲜。每一分钱和每一大卡都能追到官方出处。</p>
+      </section>
+
+      <section class="guide-block">
+        <h3>② 随口说就行，四类信息顺序随意</h3>
+        <ul class="guide-slots">
+          <li><b>几人</b>　3个人 / 我们仨 / 四个人</li>
+          <li><b>预算</b>　100块以内 / 80到120 / 预算不限</li>
+          <li><b>忌口</b>　不吃辣 / 忌牛肉 / 不要乳制品</li>
+          <li><b>想吃</b>　我要吃炸鸡 / 来一份薯饼 / 想吃麦辣鸡腿堡</li>
+        </ul>
+      </section>
+
+      <section class="guide-block">
+        <h3>③ 配完你能拿到</h3>
+        <ul class="guide-abilities">
+          <li>三版方案 + 顶部「我理解成了」复述，解析不是黑箱</li>
+        <li>每版的热量与官方营养成分（可展开看）</li>
+          <li>套餐 vs 拆开单点的四维对比：价格 / 热量 / 蛋白质 / 口味匹配</li>
+          <li>多人分账 + 分人用券，券账本一行一张记去向</li>
+        </ul>
+      </section>
+
+      <section class="guide-block guide-boundary">
+        <h3>④ 它不会做的事</h3>
+        <ul>
+          <li>不下单——只给清单，核销请到麦当劳小程序 / APP</li>
+          <li>官方没给的数据写「官方未提供」，不估算、不编造</li>
+          <li>离线下价格是快照，标「离线预演」而不是绿色「已校验」</li>
+        </ul>
+      </section>
+
+      <div class="guide-quickstart">
+        <strong>最快三步</strong>
+        <ol>
+          <li>在输入框敲一句：几人、预算、忌口、想吃什么</li>
+          <li>点「给我搭三份」，或直接点下面的示例</li>
+          <li>展开「看这顿热量」/「看营养成分」，需要时点「分账」</li>
+        </ol>
+        <div class="guide-examples" id="guideExamples"></div>
+      </div>
+    </div>
+
+    <div class="dialog-foot">
+      <span>引导页只在首次打开时自动弹出，之后可从右上角「使用说明」重开。</span>
+      <button type="button" id="guideDone">开始使用</button>
+    </div>
   </dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>

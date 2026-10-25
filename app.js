@@ -2,7 +2,7 @@
   'use strict';
 
   var S;
-  var state = { meta: null, showcase: [], campaigns: [], coupons: [], activeCoupon: null, plans: [], selected: new Set(), slots: [], activeSlot: '', lastQuery: null, slotRevision: 0, actionSequence: 0, slide: 0, campaignSlide: 0, toastTimer: 0, rotationTimer: 0, campaignTimer: 0, adapter: null, mode: 'offline', degraded: false, degradeReason: '', requestId: '', availability: {} };
+  var state = { meta: null, showcase: [], campaigns: [], coupons: [], activeCoupon: null, plans: [], selected: new Set(), slots: [], activeSlot: '', lastQuery: null, slotRevision: 0, actionSequence: 0, slide: 0, campaignSlide: 0, toastTimer: 0, rotationTimer: 0, campaignTimer: 0, adapter: null, mode: 'offline', degraded: false, degradeReason: '', requestId: '', availability: {}, baseline: { people: '2' } };
   var $ = function (id) { return document.getElementById(id); };
   var els = {
     metaLine: $('metaLine'), slotSelector: $('slotSelector'), conversation: $('conversation'), request: $('requestText'), charCount: $('charCount'), form: $('advisorForm'), submit: $('submitButton'),
@@ -300,6 +300,98 @@
     'avoid': '与忌口冲突，已不加入方案',
     'budget': '当前预算装不下，没有加入方案'
   };
+
+  /* ================= 输入引导（第 10 轮） =================
+   * 两件事，都不猜、不编：
+   *  ① 示例 chips：点一下把「规范说法」填进输入框，让人一眼知道能怎么说
+   *  ② 补全提示：出了结果后，按服务层的 sources（text/control/default）
+   *     找出用户还没说的槽位，生成可追加的 chips
+   * 判定一律走服务层给的 sources，UI 不自行判断「有没有说到」。 */
+  var PROMPT_EXAMPLES = [
+    { label: '3人 · 100元以内', text: '3 个人，100 块以内，想吃得满足一点' },
+    { label: '双人尝新品', text: '两个人，预算 80 到 120，想试新品' },
+    { label: '低卡高蛋白', text: '一个人，想减脂，多一点蛋白质' },
+    { label: '点名菜', text: '我要吃炸鸡' },
+    { label: '一句两菜', text: '我想吃炸鸡和薯饼' },
+    { label: '拆套餐（重头戏）', text: '2 个人，100 块，我想要巨无霸套餐里的汉堡，不要薯条' },
+    { label: '忌口冲突', text: '不吃辣，想吃麦辣鸡腿堡' },
+    { label: '宵夜', text: '宵夜，2 个人，清淡一点' }
+  ];
+
+  /* 哪些槽位用户还没说（纯函数，单测用）。
+   * sources.people/budget/avoid：'default' 表示这一轮用户没提供。 */
+  /* ⚠️ 判定口径（踩过的坑，别改回去）：
+   * ① 不能只看 plan.sources 是否 'default' —— 前端每次提交都把控件值全部带上，
+   *    sources.people 恒为 'control'（控件默认值 2），会把「用户没说人数」误判成「说了」；
+   * ② 也不能只看生效值 unlimited —— 未勾「不限」时前端传 null，
+   *    parseQuery 保留默认 unlimited=true，同样是「没说」却显示「预算不限」。
+   * 正确口径：**用户主动提供过**（手动动过控件 → dataset.actionAt，
+   * 或文本里说过 → sources.X === 'text'）才算已提供，其余视为「还缺」。 */
+  function missingSlots(plan) {
+    var s = (plan && plan.sources) || {};
+    var r = (plan && plan.resolved) || {};
+    var out = [];
+    if (!els.people.dataset.actionAt && s.people !== 'text' &&
+        Number(r.people) === Number(state.baseline.people)) {
+      out.push({ key: 'people', tip: '几人', sample: '3 个人' });
+    }
+    var budgetTouched = !!(els.budgetMin.dataset.actionAt || els.budgetMax.dataset.actionAt || els.unlimited.dataset.actionAt);
+    if (!budgetTouched && s.budget !== 'text' && r.budgetMax == null) {
+      out.push({ key: 'budget', tip: '预算', sample: '100 块以内' });
+    }
+    if (!(r.avoid || []).length) out.push({ key: 'avoid', tip: '忌口', sample: '不吃辣' });
+    if (!(r.wanted || []).length) out.push({ key: 'wanted', tip: '想吃', sample: '我要吃炸鸡' });
+    return out;
+  }
+
+  function hintChipsHtml() {
+    return PROMPT_EXAMPLES.map(function (ex) {
+      return '<button type="button" class="suggestion-chip" data-hint-text="' + attr(ex.text) + '">' + esc(ex.label) + '</button>';
+    }).join('');
+  }
+
+  function renderPromptHints(plan) {
+    var chips = $('guideChips'), miss = $('guideMissing'), gex = $('guideExamples');
+    if (chips && !chips.getAttribute('data-built')) {
+      chips.innerHTML = hintChipsHtml();
+      chips.setAttribute('data-built', 'true');
+    }
+    if (gex && !gex.getAttribute('data-built')) {
+      gex.innerHTML = hintChipsHtml();
+      gex.setAttribute('data-built', 'true');
+    }
+    if (!miss) return;
+    var gaps = plan ? missingSlots(plan) : [];
+    if (!gaps.length) { miss.hidden = true; miss.innerHTML = ''; return; }
+    miss.hidden = false;
+    miss.innerHTML = '<span class="missing-kicker">再补一句就更准</span>' +
+      gaps.map(function (g) {
+        return '<button type="button" class="suggestion-chip hint-gap" data-hint-append="' + attr(g.sample) + '">＋ ' + esc(g.tip) + '</button>';
+      }).join('');
+  }
+
+  /* 引导页（第 10 轮）：首次访问自动弹出；「使用说明」可随时重开。
+   * localStorage 不可用时（隐私模式/file:// 某些策略）也不影响主流程。 */
+  var GUIDE_KEY = 'mcadvisor-guided';
+  function guideSeen() {
+    try { return localStorage.getItem(GUIDE_KEY) === '1'; } catch (e) { return false; }
+  }
+  function markGuideSeen() {
+    try { localStorage.setItem(GUIDE_KEY, '1'); } catch (ignore) { /* 存不了就每轮提示，不阻断 */ }
+  }
+  function openGuide() {
+    var dlg = $('guideDialog');
+    if (!dlg) return;
+    if (typeof dlg.showModal === 'function' && !dlg.open) dlg.showModal();
+    else dlg.removeAttribute('hidden');
+  }
+  function closeGuide() {
+    var dlg = $('guideDialog');
+    if (!dlg) return;
+    if (typeof dlg.close === 'function' && dlg.open) dlg.close();
+    dlg.setAttribute('hidden', '');
+    markGuideSeen();
+  }
   function showNotices(plans) {
     var first = plans && plans[0] || {};
     var notices = [];
@@ -338,6 +430,7 @@
     $('resultCount').textContent = plans.length + ' 份个性化方案';
     applyResolved(plans);
     showNotices(plans);
+    renderPromptHints(plans[0]);   // 结果出来后提示「还缺什么」
     updateSelectionBar();
   }
 
@@ -928,6 +1021,38 @@
       state.lastQuery = query;
       runRecommendation(query, { scroll: false });
     });
+    /* 引导页（第 10 轮）：右上角入口 + 关闭（遮罩点击 / ESC / 按钮） */
+    $('guideOpen').addEventListener('click', openGuide);
+    $('guideClose').addEventListener('click', closeGuide);
+    $('guideDone').addEventListener('click', closeGuide);
+    $('guideDialog').addEventListener('click', function (event) {
+      if (event.target === $('guideDialog')) closeGuide();
+    });
+    /* 示例 chips：点击填入输入框（覆盖）/ 补全 chips：点击追加（不覆盖已有内容） */
+    $('guideChips').addEventListener('click', function (event) {
+      var button = event.target.closest('[data-hint-text]');
+      if (!button) return;
+      els.request.value = button.getAttribute('data-hint-text') || '';
+      els.charCount.textContent = els.request.value.length + ' / 500';
+      els.request.focus();
+    });
+    $('guideExamples').addEventListener('click', function (event) {
+      var button = event.target.closest('[data-hint-text]');
+      if (!button) return;
+      els.request.value = button.getAttribute('data-hint-text') || '';
+      els.charCount.textContent = els.request.value.length + ' / 500';
+      closeGuide();
+      els.request.focus();
+    });
+    $('guideMissing').addEventListener('click', function (event) {
+      var button = event.target.closest('[data-hint-append]');
+      if (!button) return;
+      var add = button.getAttribute('data-hint-append') || '';
+      var cur = els.request.value.trim().replace(/[，,。;;\s]+$/, '');
+      els.request.value = (cur ? cur + '，' : '') + add;
+      els.charCount.textContent = els.request.value.length + ' / 500';
+      els.request.focus();
+    });
     $('closeSplit').addEventListener('click', function () { $('splitPanel').hidden = true; });
     $('splitMembers').addEventListener('input', renderSplitMembers);
     $('splitMode').addEventListener('change', renderSplitMembers);
@@ -961,6 +1086,7 @@
 
   async function boot() {
     bindEvents();
+    state.baseline.people = els.people.value;   // 控件初始值：用于判断「用户有没有说过人数」
     try {
       state.slots = McAdvisor.listSlots().filter(function (slot) { return slot.available; });
       state.activeSlot = state.slots.length ? (state.slots[0].key || '') : '';
@@ -985,7 +1111,9 @@
       if (state.activeSlot) adapterOptions.slot = state.activeSlot;
       S = McAdvisor.createService(adapterOptions);
       await readServiceSnapshot();
+      renderPromptHints();            // 输入引导示例 chips
       initRotation();
+      if (!guideSeen()) openGuide();  // 首次访问自动弹出引导页
     } catch (error) {
       els.metaLine.innerHTML = '<span class="meta-dot meta-dot-error"></span><span>本地菜单快照未能载入</span>';
       els.error.textContent = '菜单服务未能初始化，请确认当前目录中的 data/menu_data.js、data/menu_data_night.js、data/campaigns.js、engine.js 与 service.js 完整。' + (error && error.message ? ' (' + error.message + ')' : '');

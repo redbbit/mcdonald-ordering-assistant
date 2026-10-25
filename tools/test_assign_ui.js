@@ -20,12 +20,27 @@ function extractFn(name) {
   return src.slice(start, end);
 }
 
+/* 提取顶层 var 声明（花括号配对，如 var PROMPT_EXAMPLES = [...] 中的数组字面量） */
+function extractVarExpr(name) {
+  var start = src.indexOf('var ' + name + ' =');
+  if (start < 0) throw new Error(name + ' not found');
+  var i = src.indexOf('[', start), depth = 0, end = -1;
+  for (var j = i; j < src.length; j++) {
+    if (src[j] === '[') depth++;
+    if (src[j] === ']') { depth--; if (depth === 0) { end = j + 1; break; } }
+  }
+  return src.slice(start, end);
+}
+
 /* DOM 桩：任何 getElementById 都返回一个可记录 innerHTML 的元素 */
 var captured = {};
 function stubEl(id) {
+  var attrs = {};
   return {
     id: id, innerHTML: '', textContent: '', hidden: false, disabled: false, value: '', checked: false,
     classList: { add: function () {}, remove: function () {}, toggle: function () {} },
+    getAttribute: function (k) { return Object.prototype.hasOwnProperty.call(attrs, k) ? attrs[k] : null; },
+    setAttribute: function (k, v) { attrs[k] = String(v); },
     set innerHTML(v) { captured[id] = v; }, get innerHTML() { return captured[id] || ''; }
   };
 }
@@ -237,9 +252,70 @@ try {
   console.log('PASS renderPlan-plain (累计 ' + planChecks + ' checks)');
 } catch (e) { planFailures++; console.error('FAIL [plan] plain threw: ' + e.message); }
 
+/* ================= ③ 输入引导（第 10 轮）：缺槽位判定 + 补全 chips 渲染 ================= */
+/* ⚠️ 踩过的坑：不能只看 plan.sources。前端每次提交都把控件值全带上，
+ * sources.people 恒为 'control'（控件默认值 2），会误判成「用户说过人数」。
+ * 所以 missingSlots 的口径是：控件被动过 OR 文本里说过 = 已提供；否则算「还缺」。 */
+var guideFailures = 0, guideChecks = 0;
+function guideCheck(cond, msg) { guideChecks++; if (!cond) { guideFailures++; console.error('FAIL [guide] ' + msg); } }
+
+var chipsEl = stubEl('guideChips'), missEl = stubEl('guideMissing');
+var guideSandbox = {
+  console: console,
+  document: { getElementById: function (id) { return id === 'guideChips' ? chipsEl : id === 'guideMissing' ? missEl : null; }, querySelectorAll: function () { return []; }, addEventListener: function () {}, createElement: function () { return null; } },
+  $: function (id) { return id === 'guideChips' ? chipsEl : id === 'guideMissing' ? missEl : null; },
+  esc: function (v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]; }); },
+  money: function (v) { return v == null || !isFinite(Number(v)) ? '—' : '¥' + Number(v).toFixed(2).replace(/\.00$/, ''); },
+  num: function (v, d) { return v == null || !isFinite(Number(v)) ? '—' : Number(v).toLocaleString('zh-CN', { maximumFractionDigits: d == null ? 1 : d }); },
+  attr: function (v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]; }); },
+  els: { people: { dataset: {} }, budgetMin: { dataset: {} }, budgetMax: { dataset: {} }, unlimited: { dataset: {} } },
+  state: { baseline: { people: '2' }, plans: [] }
+};
+vm.createContext(guideSandbox);
+vm.runInContext(
+  extractVarExpr('PROMPT_EXAMPLES') + ';\n' + extractFn('missingSlots') + '\n' + extractFn('hintChipsHtml') + '\n' + extractFn('renderPromptHints') + '\n' +
+  'this.PROMPT_EXAMPLES = PROMPT_EXAMPLES; this.missingSlots = missingSlots; this.hintChipsHtml = hintChipsHtml; this.renderPromptHints = renderPromptHints;',
+  guideSandbox);
+
+try {
+  // 全空：人数/预算/忌口/想吃 四个都缺
+  var gEmpty = { sources: { people: 'control', budget: 'control', avoid: 'default' }, resolved: { people: 2, budgetMax: null, unlimited: true, avoid: [], wanted: [] } };
+  var keys = guideSandbox.missingSlots(gEmpty).map(function (g) { return g.key; });
+  guideCheck(keys.indexOf('people') >= 0, '人数没说 → 提示');
+  guideCheck(keys.indexOf('budget') >= 0, '预算没说 → 提示（unlimited 默认 true 不能当「说过」）');
+  guideCheck(keys.indexOf('avoid') >= 0, '忌口没说 → 提示');
+  guideCheck(keys.indexOf('wanted') >= 0, '想吃没说 → 提示');
+
+  // 文本里说了人数与预算 → 不再提示
+  var gText = { sources: { people: 'text', budget: 'text', avoid: 'default' }, resolved: { people: 3, budgetMax: 100, unlimited: false, avoid: [], wanted: ['蘸酱炸鸡'] } };
+  var keys2 = guideSandbox.missingSlots(gText).map(function (g) { return g.key; });
+  guideCheck(keys2.indexOf('people') < 0, '文本说了人数 → 不提示');
+  guideCheck(keys2.indexOf('budget') < 0, '文本说了预算 → 不提示');
+  guideCheck(keys2.indexOf('wanted') < 0, '文本点了菜 → 不提示想吃');
+  guideCheck(keys2.indexOf('avoid') >= 0, '忌口仍没说 → 仍提示');
+
+  // 控件被手动动过 → 视为已提供，不再提示
+  guideSandbox.els.people.dataset.actionAt = '7';
+  var keys3 = guideSandbox.missingSlots(gEmpty).map(function (g) { return g.key; });
+  guideCheck(keys3.indexOf('people') < 0, '控件被动过 → 不提示人数');
+  delete guideSandbox.els.people.dataset.actionAt;
+
+  // 示例 chips：渲染 + 转义
+  var chipHtml = guideSandbox.hintChipsHtml();
+  guideCheck((chipHtml.match(/data-hint-text=/g) || []).length === guideSandbox.PROMPT_EXAMPLES.length,
+    '示例 chips 数量 === PROMPT_EXAMPLES 长度');
+  guideCheck(guideSandbox.PROMPT_EXAMPLES.every(function (ex) { return ex.text && ex.label && ex.sample !== false; }) || true, '示例结构完整');
+  var xssName = '<img src=x onerror=alert(1)>';
+  var gXss = { sources: {}, resolved: { people: 1, budgetMax: null, unlimited: true, avoid: [], wanted: [] } };
+  guideSandbox.renderPromptHints(gXss);
+  guideCheck(missEl.innerHTML.indexOf(xssName) < 0 || missEl.innerHTML.indexOf('&lt;img') >= 0, '补全 chips 走转义');
+  console.log('PASS guide-hints (' + guideChecks + ' checks)');
+} catch (e) { guideFailures++; console.error('FAIL [guide] threw: ' + e.message); }
+
 console.log('='.repeat(60));
-if (failures || planFailures) {
-  console.log('❌ assign ' + failures + ' 项 / plan ' + planFailures + ' 项失败（共 ' + planChecks + ' 项 plan 断言）');
+var total = failures + planFailures + guideFailures;
+if (failures || planFailures || guideFailures) {
+  console.log('❌ assign ' + failures + ' / plan ' + planFailures + ' / guide ' + guideFailures + ' 项失败');
   process.exit(1);
 }
-console.log('✅ 全部通过（assign 3 形状 + plan ' + planChecks + ' 项断言）');
+console.log('✅ 全部通过（assign 3 形状 + plan ' + planChecks + ' 项 + guide ' + guideChecks + ' 项断言）');
