@@ -33,29 +33,36 @@ var PAGE_URL = 'file:///' + path.join(ROOT, 'index.html').replace(/\\/g, '/');
   }
 
   // ① 基础配餐
-  await ask('3 个人，100 块以内，想吃得满足一点');
+  await ask('3 个人，100 块以内，想吃得满足一点', 6500);
   var understand = await page.textContent('#understandingLine').catch(function () { return ''; });
   log('① 基础配餐（理解行：' + (understand || '').slice(0, 60) + '）');
 
   // ② 口语点名
-  await ask('我要吃炸鸡');
+  await ask('我要吃炸鸡', 6000);
   log('② 口语点名：我要吃炸鸡');
-  await ask('我想吃炸鸡和薯饼');
+  await ask('我想吃炸鸡和薯饼', 6000);
   log('② 一句两菜');
 
   // ③ 套餐拆开重头戏
-  await ask('2 个人，100 块，我想要巨无霸套餐里的汉堡，不要薯条', 3000);
+  await ask('2 个人，100 块，我想要巨无霸套餐里的汉堡，不要薯条', 7000);
   var compare = page.locator('.combo-comparison').first();
   if (await compare.count()) {
     await compare.locator('summary').click();
-    await page.waitForTimeout(1800);
+    await page.waitForTimeout(6000);
     log('③ 四维对比已展开');
   } else {
     log('③ ⚠ 无 combo-comparison（检查场景文本）');
   }
+  // 子项面板可视化勾选（GPT 新增能力）：展开第一个子项面板
+  var subpart = page.locator('.item-subparts').first();
+  if (await subpart.count()) {
+    await subpart.locator('summary').click();
+    await page.waitForTimeout(4000);
+    log('③ 子项面板已展开');
+  }
 
   // ④ 忌口冲突
-  await ask('不吃辣，想吃麦辣鸡腿堡');
+  await ask('不吃辣，想吃麦辣鸡腿堡', 6500);
   var notice = await page.textContent('#noticeStack').catch(function () { return ''; });
   log('④ 忌口冲突（notices：' + (notice || '').slice(0, 50) + '）');
 
@@ -71,7 +78,7 @@ var PAGE_URL = 'file:///' + path.join(ROOT, 'index.html').replace(/\\/g, '/');
     var planOptions = await page.locator('#splitPlan option').count();
     if (planOptions > 0) { await page.selectOption('#splitPlan', { index: 0 }); }
     await page.click('#runAssign');
-    await page.waitForTimeout(2500);
+    await page.waitForTimeout(7000);
     var assignHtml = await page.textContent('#assignResult').catch(function () { return ''; });
     log('⑤ 拆单用券（' + (assignHtml || '').slice(0, 50) + '…）');
   } else {
