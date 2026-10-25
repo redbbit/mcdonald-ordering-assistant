@@ -56,6 +56,18 @@
    - 四块：① 它不是聊天机器人 ② 四类信息怎么说（几人/预算/忌口/想吃，各带口语例子）③ 配完能拿到什么（三版方案+理解行/热量营养/四维对比/分账用券）④ 三条诚实边界（不下单、官方未提供不编造、离线预演）
    - 交互：ESC / 点遮罩 /「开始使用」都能关；localStorage 记忆；右上角「使用说明」可随时重开
 
+### 🔒 纪律：这条坑以后别再踩
+
+`style.css` 里有全局规则 `[hidden] { display: none !important; }`（第 178 行）。**任何 `<dialog>` 都不要用 `hidden` 属性控制显隐** —— 原生 dialog 的显隐只由 `open` 属性决定。`showModal()` **不会清除** `hidden`，两者混用必然产生「看不见的模态框挡住一切」的假死，且不报错、不崩溃，极难排查。
+
+- 显示：`dialog.showModal()`
+- 隐藏：`dialog.close()`
+- ❌ 别再写 `dialog.hidden = true` / `setAttribute('hidden', ...)`
+
+**帮我复核一下**：你那版里优惠券箱 `couponDialog`、或任何别的弹层，还有用了 `hidden` 属性的吗？我扫过一遍，只有 `guideDialog` 中招，但你更熟悉自己的写法。
+
+> 这次是靠系统 Edge 无头浏览器跑真实交互序列才抓到的 —— **静态检查和单元测试抓不到这类问题**。以后你改弹层相关 UI，建议照 `tools/test_guide_ui.js` 的模式跑一遍。
+
 ## 三、测试（你的版式全部锁住了）
 
 - `tools/test_e2e_ui.js` **48 项**：真实 service 输出 → 你的渲染函数；角标/子项面板三态/mixSummary/四维对比内联/maxCal 黄牌/resolved.maxCal/摘要行 XSS 转义/11 种脏输入不崩
