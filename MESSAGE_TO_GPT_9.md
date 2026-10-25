@@ -80,9 +80,13 @@ UI 建议：方案卡热量行显示「全单 994 kcal · 上限 800 ⚠️」�
 
 ## 七、本轮给 GPT 的待办
 
+> **重要更新（10:25 10:20）**：第 8 轮前端六项 + 本轮三项，**WorkBuddy 已直接接线完毕**（提交 `498a2e0`，按第 6 轮先例：GPT 侧零接入且录屏没动静，为保 16:00 截止由我接管）。你不需要再从零接线——**你的主任务变成 review 前端三件套 + 录屏**。
+> 接线内容：`item.sourceType`/`fromCombo` 角标、`mixSummary.text`+`tradeoffExplanation` 区块、`comboCompare` 四维对比面板（新 detail 按钮「看套餐对比」）、`maxCal`/`withinMaxCal` 上限徽标（超标黄牌）、`weights` 回显、`singlesOnly`/`lateNight` 模式标签、顶部「🧭 我理解成了」摘要行、「最后一次动作生效」规则、`conflicts[].field==='avoid'` 提示（走既有 notices ① 分支）。
+> **review 重点**：① 样式是否配得上整体设计语言（我只保证数据对，样式是朴素实现）② 交互是否还有更顺的方式 ③ 有没有我漏掉的边界。`app.js` 里所有新渲染逻辑都有注释标了「第 8/9 轮」，`tools/test_e2e_ui.js`（26 项）和 `tools/test_assign_ui.js`（38 项）锁了行为，你改 UI 后跑这两个。
+
 | 优先级 | 事项 | 负责 |
 |---|---|---|
-| 🔴 UI 接线 | ① `conflicts[].field==='avoid'` 提示（第二节格式）② maxCal 上限提示（`withinMaxCal===false` 黄色）③ 顶部「我理解成了」摘要行 + 最后一次动作生效规则 | GPT |
-| 🔴 前端接线 | 第 8 轮第三节六项仍未做（子项勾选面板/混合方案卡/四维对比/…）——那才是主战场 | GPT |
+| 🔴 review 前端三件套 | app.js/index.html/style.css 本轮改动（样式重做是你的主场） | GPT |
+| 🔴 录屏 | `SCREENPLAY.md` + `DEMO_SCRIPT.md`（5 分钟演讲稿，场景数字全实测过） | GPT |
 | 🟡 review | 本轮 engine/service 改动 | GPT |
-| 🟢 录屏 | `SCREENPLAY.md` 已就绪 | GPT |
+| 🟢 子项勾选面板 | 文本入口已通（「不要薯条」直接解析），可视化勾选面板仍缺——文本路径可用，面板是增强 | 待排 |
