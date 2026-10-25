@@ -5,8 +5,7 @@
 | `SUBMISSION.md` | 作品说明全文（使用方式 / 亮点 / 实现思路），可逐段粘贴到表单 |
 | `cover.png` | 作品封面，1600×1200（4:3），318 KB |
 | `DEMO_SCRIPT.md` | 演示拍摄脚本：16 个分镜 + 旁白文案 + 隐私红线 + 导出规格 |
-| `demo-walkthrough-captioned.mp4` | 演示走查视频（74 秒，字幕已烧进画面），覆盖 13 类功能 + 全场单点彩蛋 |
-| `demo-captions.srt` | 字幕文件（VLC / PotPlayer 同名自动加载；自行配音时可复用时间轴） |
+| `demo-walkthrough-voiced.mp4` | **演示视频（5 分 08 秒，带真人配音）**：在线 MCP 模式实操，覆盖口语解析 / 三版方案 / 套餐子项拆开比价 / 四维对比 / 忌口冲突 / 热量上限 / 按券拆单 / 全场单点彩蛋 |
 
 ## 在线体验
 
@@ -17,6 +16,8 @@ https://mcd-order-advisor.app.workbuddy.host/?sharecode=TC2HD3HTE5
 
 ## 录像说明
 
-`demo-walkthrough-captioned.mp4` 由无头浏览器自动走查录制：1440×900 视口，
-未配音，字幕已烧进画面。因无头渲染限制，视频为 800×500，且滚动到页面下半部分时
-右侧「今日菜单灵感」栏偏暗。需要更高质量时，按 `DEMO_SCRIPT.md` 自行配音重录即可。
+`demo-walkthrough-voiced.mp4`：1834×1080 / 30fps / 5 分 08 秒 / 29 MB，**带真人配音讲解**，
+录制环境是本机 `http://127.0.0.1:4317/`（在线 MCP 模式，顶部显示「在线 MCP · 更新于 …」）。
+画面内不含任何 Token、终端或本地文件路径；地址栏仅为本地回环地址。
+
+字幕文件未附带——配音即讲解，旁白文案见 `DEMO_SCRIPT.md`。
