@@ -379,17 +379,20 @@
   function markGuideSeen() {
     try { localStorage.setItem(GUIDE_KEY, '1'); } catch (ignore) { /* 存不了就每轮提示，不阻断 */ }
   }
+  /* ⚠️ 别再给 <dialog> 加 hidden 属性：全局样式里有
+   * `[hidden] { display: none !important }`，而 showModal() 不会清除 hidden。
+   * 结果就是「隐形的模态框」——看不见但遮罩仍拦截所有点击，整页像卡死。
+   * 原生 dialog 的显示/隐藏只由 open 属性决定，不需要 hidden 插一脚。 */
   function openGuide() {
     var dlg = $('guideDialog');
     if (!dlg) return;
+    dlg.removeAttribute('hidden');   // 防御：万一别处加过，先摘掉
     if (typeof dlg.showModal === 'function' && !dlg.open) dlg.showModal();
-    else dlg.removeAttribute('hidden');
   }
   function closeGuide() {
     var dlg = $('guideDialog');
     if (!dlg) return;
     if (typeof dlg.close === 'function' && dlg.open) dlg.close();
-    dlg.setAttribute('hidden', '');
     markGuideSeen();
   }
   function showNotices(plans) {
