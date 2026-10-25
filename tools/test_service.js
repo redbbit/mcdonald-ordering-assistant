@@ -81,6 +81,36 @@ console.log('='.repeat(78));
   // 「3个人吃炸鸡」不能被误判成忌鸡肉
   check(S.parseQuerySync('3个人一起吃炸鸡').avoid.indexOf('鸡肉') < 0, '不得把「吃炸鸡」误判为忌鸡肉');
 
+  /* ---- 4b. 点名菜：口语变体 + 一句多菜 ----
+   * 投诉复盘：「我想吃炸鸡它一直推汉堡」「想吃薯饼推的餐一个薯饼也没有」。
+   * 根因：动词正则捕获带缓冲词（吃炸鸡/个炸鸡/份炸鸡/炸鸡和薯饼），原串匹配静默落空。
+   * 修法：动词表扩充 + wantCandidates 剥缓冲词/切连接词，一句多菜各收各的。 */
+  const WANT = [
+    '我要吃炸鸡', '想吃个炸鸡', '想吃点炸鸡', '想吃那个炸鸡',
+    '加点炸鸡', '我想吃炸鸡和薯饼', '整一份炸鸡',
+    '我想吃炸鸡', '想吃薯饼'
+  ];
+  for (const text of WANT) {
+    const q = S.parseQuerySync(text, D.dishes);
+    check(q.wanted.length > 0, `「${text}」应解析出点名菜，实得 wanted=${JSON.stringify(q.wanted)}`);
+    check((q.unmetWanted || []).length === 0, `「${text}」点名菜应能在菜单里找到，unmet=${JSON.stringify(q.unmetWanted)}`);
+  }
+  // 一句多菜：连接词切开后两个都要收
+  const qMulti = S.parseQuerySync('我想吃炸鸡和薯饼', D.dishes);
+  check(qMulti.wanted.indexOf('蘸酱炸鸡') >= 0, '「想吃炸鸡和薯饼」应含 蘸酱炸鸡');
+  check(qMulti.wanted.indexOf('脆薯饼') >= 0, '「想吃炸鸡和薯饼」应含 脆薯饼');
+  // 标准说法不受影响
+  check(JSON.stringify(S.parseQuerySync('想吃薯饼', D.dishes).wanted) === '["脆薯饼"]', '「想吃薯饼」仍精确命中 脆薯饼');
+  // 口语变体不得误伤既有边界：规格层级惩罚仍生效
+  check(S.parseQuerySync('想吃麦辣鸡腿堡', D.dishes).wanted.indexOf('麦辣鸡腿汉堡') >= 0,
+    '「想吃麦辣鸡腿堡」应命中 麦辣鸡腿汉堡（共同前缀≥3）');
+  check(S.parseQuerySync('想吃麦辣鸡腿堡', D.dishes).wanted.every(w => w.indexOf('四件套') < 0),
+    '「想吃麦辣鸡腿堡」不得串到四件套');
+  // 端到端：口语输入的三版方案都必须含点名菜（用户投诉的直接场景）
+  const wantPlans = await S.recommendPlans('我要吃炸鸡');
+  check(wantPlans.every(p => p.items.some(i => /炸鸡/.test(i.name))),
+    '「我要吃炸鸡」三版方案都必须含炸鸡，实得 ' + wantPlans.map(p => p.items.map(i => i.name).join('/')).join(' | '));
+
   /* ---- 5. recommendPlans 固定三版 ---- */
   const qs = [
     { text: '3个人聚餐，150以内，随便吃' },

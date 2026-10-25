@@ -217,13 +217,27 @@
     /* 点名菜：「巨无霸」/「想吃麦辣鸡腿堡」→ 校验成数据里的真实菜名。
      * 认不出来（比如活动标题）就静默忽略——不拿它当忌口、不当目标、不乱报冲突。
      * 匹配规则与引擎一致：相等 / 互相包含 / 共同前缀 ≥3 字
-     * （券面和口语常说「麦辣鸡腿堡」，菜单里叫「麦辣鸡腿汉堡」，差一个字）。 */
+     * （券面和口语常说「麦辣鸡腿堡」，菜单里叫「麦辣鸡腿汉堡」，差一个字）。
+     * 口语缓冲词要剥：「我要吃炸鸡」捕获出「吃炸鸡」、「想吃个炸鸡」出「个炸鸡」、
+     * 「整一份炸鸡」出「份炸鸡」、「想吃炸鸡和薯饼」出「炸鸡和薯饼」——
+     * 原串直接匹配会静默落空，用户看到的就是「我说了想吃炸鸡，它一直推汉堡」。
+     * 修法：按连接词切开、剥首尾缓冲词，与原串一起当候选取最高分
+     * （原串同分优先——菜名真以缓冲词开头时（那么大鸡排）不会误伤）。 */
     if (dishes && dishes.length) {
       var wantedNames = [];
       var qre = /[「『“"]([^」』”"]{2,15})[」』”"]/g, qm;
       while ((qm = qre.exec(t))) wantedNames.push(qm[1]);
-      var vre = /(?:想吃|想要|来[一份两个三个]?|加[一个份]?|点[一个份]?|我要|整[一个份]?)\s*([\u4e00-\u9fa5A-Za-z0-9]{2,12})/g, vm;
+      // 动词表覆盖口语：长的放前面（我要吃 先于 我要），量词留给缓冲词剥离兜
+      var vre = /(?:想吃|想要|想点|想加|想来|我要吃|我要|来[一份两个三个]?|加[一个份]?|点[一个份]?|整[一个份]?)\s*([\u4e00-\u9fa5A-Za-z0-9]{2,12})/g, vm;
       while ((vm = vre.exec(t))) wantedNames.push(vm[1]);
+      function wantCandidates(raw) {
+        var out = [raw];
+        (raw || '').split(/[和跟及与、，,]/).forEach(function (piece) {
+          var s = piece.replace(/^[吃喝个点些那这了份]+/, '').replace(/[吧呀哦了啊呢嘛]+$/, '');
+          if (s.length >= 2 && out.indexOf(s) < 0) out.push(s);
+        });
+        return out;
+      }
       function nameScore(query, name) {
         if (!query || !name) return 0;
         if (query === name) return 1000 + name.length;
@@ -235,18 +249,31 @@
       }
       var TIER_RE = /(三件套|四件套|五件套|双件套|件套|套餐|桶|分享餐|双人|多人|随心选|组合|任选)/;
       wantedNames.forEach(function (name) {
-        var hit = null, hitScore = 0;
-        dishes.forEach(function (d) {
-          if (!d || d.name.length < 2) return;
-          var s = nameScore(name, d.name);
-          if (s <= 0) return;
-          // 规格层级不一致：说法没带「套/桶/分享」而菜名带了 → 不是同一个东西
-          if (TIER_RE.test(d.name) && !TIER_RE.test(name)) s = Math.min(s, 99);
-          if (s > hitScore || (s === hitScore && hit && d.name.length < hit.name.length)) {
-            hit = d; hitScore = s;
-          }
+        var cands = wantCandidates(name);
+        var hits = [];
+        cands.forEach(function (cand) {
+          var best = null, bestScore = 0;
+          dishes.forEach(function (d) {
+            if (!d || d.name.length < 2) return;
+            var s = nameScore(cand, d.name);
+            if (s <= 0) return;
+            // 规格层级不一致：说法没带「套/桶/分享」而菜名带了 → 不是同一个东西
+            if (TIER_RE.test(d.name) && !TIER_RE.test(cand)) s = Math.min(s, 99);
+            if (s > bestScore || (s === bestScore && best && d.name.length < best.name.length)) {
+              best = d; bestScore = s;
+            }
+          });
+          if (best) hits.push({ d: best, s: bestScore, cand: cand });
         });
-        if (hit && q.wanted.indexOf(hit.name) < 0) q.wanted.push(hit.name);
+        /* 一句多菜（「想吃炸鸡和薯饼」切出 炸鸡/薯饼）要都收；
+         * 但短 cand 是另一个 cand 的子串且分不高时丢掉——防「无霸」式误命中
+         * （子串关系的 cands 只留分高的那个，互不为子串的各收各的）。 */
+        hits.forEach(function (h) {
+          var dominated = hits.some(function (o) {
+            return o !== h && o.cand !== h.cand && o.cand.indexOf(h.cand) >= 0 && o.s >= h.s;
+          });
+          if (!dominated && q.wanted.indexOf(h.d.name) < 0) q.wanted.push(h.d.name);
+        });
       });
     }
 
