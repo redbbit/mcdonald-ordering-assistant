@@ -731,6 +731,30 @@
       }));
     }
 
+    /* 官方 available-coupons 回的是 markdown（- 优惠券标题：X / 状态：可领取 / <img src>）。
+     * 在线模式下解析成结构化条目，让券箱跟着官方实时变；解析不出来就如实回落快照。 */
+    function parseCouponMarkdown(raw) {
+      if (!raw) return [];
+      var md = typeof raw === 'string' ? raw : (raw.markdown || '');
+      if (!md || typeof md !== 'string') return [];
+      var out = [];
+      md.split(/- 优惠券标题：/).slice(1).forEach(function (chunk) {
+        var title = (chunk.split(/[\n]/)[0] || '').replace(/\\s*$/, '').trim();
+        if (!title) return;
+        var img = /<img[^>]+src="([^"]+)"/.exec(chunk);
+        var status = /状态：([^\n\\]+)/.exec(chunk);
+        out.push({
+          type: 'coupon', title: title,
+          status: status ? status[1].trim() : null,
+          image: img ? img[1] : null,
+          imageLocal: null, imageRemote: img ? img[1] : null,
+          imageSource: '麦当劳官方 MCP',
+          source: '麦当劳官方 MCP · available-coupons（实时）'
+        });
+      });
+      return out;
+    }
+
     /* ---------------- getCampaigns：活动 / 券 ----------------
      * coupons 来自 available-coupons（真可领）；promos 来自菜单活动标签。
      * 诚实标注：campaign-calendar 尚未接入，标签源不说谎。               */
@@ -773,7 +797,7 @@
       var upcoming = pack(all.filter(function (c) { return c.phase === 'upcoming'; }));
       var past = pack(all.filter(function (c) { return c.phase === 'past'; }));
 
-      return p({
+      var bundle = {
         coupons: coupons, promos: promos,
         // 活动日历（三个分面都用，主推 today）
         campaigns: all.length ? pack(all) : [],
@@ -787,7 +811,26 @@
           ? 'campaign-calendar 已接入：今日 ' + today.length + ' / 即将 ' + upcoming.length +
             ' / 往期 ' + past.length + ' 条，均为麦当劳官方返回'
           : 'campaign-calendar 数据文件未加载；活动标签回落到菜单 tags / dealType 官方字段'
-      });
+      };
+
+      // 在线：券跟着官方实时变；拉不到就保留快照并标注原因（不假装新鲜）
+      if (ADAPTER && MODE === 'online' && typeof ADAPTER.getCampaigns === 'function') {
+        return ADAPTER.getCampaigns().then(function (live) {
+          var parsed = parseCouponMarkdown(live && live.coupons);
+          if (parsed.length) {
+            bundle.snapshotCoupons = coupons;      // 保留快照备查
+            bundle.coupons = parsed;
+            bundle.couponsLive = { ok: true, count: parsed.length };
+          } else {
+            bundle.couponsLive = { ok: false, reason: '官方券列表没解析出条目，回落到快照' };
+          }
+          return bundle;
+        }).catch(function (err) {
+          bundle.couponsLive = { ok: false, reason: ((err && err.message) || '拉取失败') + '，回落到快照' };
+          return bundle;
+        });
+      }
+      return p(bundle);
     }
 
     /* ---------------- recommendPlans：固定三版 ---------------- */

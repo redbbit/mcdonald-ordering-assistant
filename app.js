@@ -2,7 +2,7 @@
   'use strict';
 
   var S;
-  var state = { meta: null, showcase: [], campaigns: [], coupons: [], activeCoupon: null, plans: [], selected: new Set(), slots: [], activeSlot: '', lastQuery: null, slotRevision: 0, actionSequence: 0, slide: 0, campaignSlide: 0, toastTimer: 0, rotationTimer: 0, campaignTimer: 0, adapter: null, mode: 'offline', degraded: false, degradeReason: '', requestId: '', availability: {}, baseline: { people: '2' } };
+  var state = { meta: null, showcase: [], campaigns: [], coupons: [], couponsNote: '', activeCoupon: null, plans: [], selected: new Set(), slots: [], activeSlot: '', lastQuery: null, slotRevision: 0, actionSequence: 0, slide: 0, campaignSlide: 0, toastTimer: 0, rotationTimer: 0, campaignTimer: 0, adapter: null, mode: 'offline', degraded: false, degradeReason: '', requestId: '', availability: {}, baseline: { people: '2' } };
   var $ = function (id) { return document.getElementById(id); };
   var els = {
     metaLine: $('metaLine'), slotSelector: $('slotSelector'), conversation: $('conversation'), request: $('requestText'), charCount: $('charCount'), form: $('advisorForm'), submit: $('submitButton'),
@@ -157,7 +157,7 @@
   function renderCoupons() {
     els.couponCount.textContent = String(state.coupons.length);
     if (!state.coupons.length) {
-      els.couponList.innerHTML = '<p class="soft-placeholder">当前快照没有可展示的优惠券。</p>';
+      els.couponList.innerHTML = '<p class="soft-placeholder">' + esc(state.couponsNote || '当前没有可展示的优惠券。') + '</p>';
       return;
     }
     els.couponList.innerHTML = state.coupons.map(function (coupon, i) {
@@ -1000,6 +1000,10 @@
     state.showcase = loaded[1] || [];
     var bundle = loaded[2] || {};
     state.coupons = bundle.coupons || [];
+    /* 在线券是否真的拉到（服务层给 couponsLive）；拉不到就如实说明，不假装新鲜 */
+    state.couponsNote = (bundle.couponsLive && bundle.couponsLive.ok === false)
+      ? '在线券列表拉取失败（' + (bundle.couponsLive.reason || '原因未知') + '），当前展示的是随包快照。'
+      : '';
     state.campaigns = (bundle.today && bundle.today.length ? bundle.today : bundle.upcoming) || [];
     renderMeta(); renderShowcase(); renderCampaigns(); renderCoupons();
     renderAvoidOptions(loaded[3] || [], state.lastQuery ? state.lastQuery.avoid : []);
