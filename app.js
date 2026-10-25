@@ -2,7 +2,7 @@
   'use strict';
 
   var S;
-  var state = { meta: null, showcase: [], campaigns: [], coupons: [], activeCoupon: null, plans: [], selected: new Set(), slots: [], activeSlot: '', lastQuery: null, slotRevision: 0, slide: 0, campaignSlide: 0, toastTimer: 0, rotationTimer: 0, campaignTimer: 0, adapter: null, mode: 'offline', degraded: false, degradeReason: '', requestId: '', availability: {} };
+  var state = { meta: null, showcase: [], campaigns: [], coupons: [], activeCoupon: null, plans: [], selected: new Set(), slots: [], activeSlot: '', lastQuery: null, lastSubmittedText: null, slotRevision: 0, slide: 0, campaignSlide: 0, toastTimer: 0, rotationTimer: 0, campaignTimer: 0, adapter: null, mode: 'offline', degraded: false, degradeReason: '', requestId: '', availability: {} };
   var $ = function (id) { return document.getElementById(id); };
   var els = {
     metaLine: $('metaLine'), slotSelector: $('slotSelector'), conversation: $('conversation'), request: $('requestText'), charCount: $('charCount'), form: $('advisorForm'), submit: $('submitButton'),
@@ -202,6 +202,9 @@
     var tags = [];
     (plan.newTags || []).forEach(function (t) { tags.push(buildTag(t, 'new')); });
     (plan.promoTags || []).forEach(function (t) { tags.push(buildTag(t, 'promo')); });
+    // 模式区分（第 8 轮 UI 任务 5）：singlesOnly 全单点 ≠ 混合方案，lateNight 宵夜模式
+    if (plan.singlesOnly) tags.push(buildTag('全单点模式 · 一个套餐都不要', 'mode'));
+    if (plan.lateNight) tags.push(buildTag('宵夜模式', 'mode'));
     if (!tags.length) tags.push(buildTag('按你的需求搭配', ''));
     var itemHtml = items.map(function (item) {
       var imgObj = { image: item.image, imageLocal: item.imageLocal, imageRemote: item.imageRemote, name: item.name };
@@ -217,8 +220,18 @@
       } else if (combo && combo.complete === false) {
         comboBadge = '<small class="combo-partial" title="部分子项官方未提供价格，未估算">套餐子项部分无官方价</small>';
       }
+      // 来源角标（第 8 轮 UI 任务 3）：combo 整份套餐 / single 单独点 / comboPart 套餐子项转单点。
+      // 官方 MCP 没有改配接口——comboPart 是「按子项单点价另买」，不是定制套餐，文案不能写错
+      var srcBadge = '';
+      if (item.sourceType === 'comboPart') {
+        srcBadge = '<small class="src-badge src-part" title="从「' + attr(item.fromCombo || '套餐') + '」里拆出来，按子项单点价另买；官方不支持套餐改配">套餐子项 · 单点价' + (item.fromCombo ? '（拆自 ' + esc(item.fromCombo) + '）' : '') + '</small>';
+      } else if (item.sourceType === 'combo') {
+        srcBadge = '<small class="src-badge src-combo">整份套餐</small>';
+      } else if (item.sourceType === 'single') {
+        srcBadge = '<small class="src-badge src-single">单独点</small>';
+      }
       return '<div class="plan-item" title="' + attr(item.name) + ' · ' + roleLabel(item) + '">' + imageMarkup(imgObj, '', item.name + '，官方商品图') +
-        '<span>' + esc(item.name) + '<b>×' + esc(item.quantity) + '</b>' + stock + comboBadge + '</span></div>';
+        '<span>' + esc(item.name) + '<b>×' + esc(item.quantity) + '</b>' + stock + comboBadge + srcBadge + '</span></div>';
     }).join('');
     var isSimulated = plan.simulated === true || plan.mode === 'offline' || state.mode !== 'online';
     var priceNote = isSimulated ? '<span class="source-pill simulated-pill">离线预演</span>' : '<span class="source-pill live-pill">MCP 在线</span>';
@@ -228,14 +241,33 @@
       var anyPartial = items.some(function (i) { return i.combo && i.combo.complete === false; });
       comboTag = buildTag('含 ' + cs.comboCount + ' 份套餐 · 比拆开单点' + (anyPartial ? '至少省 ' : '共省 ') + money(cs.totalSave), 'combo');
     }
+    // 热量上限（第 9 轮 maxCal）：超标必须黄牌提示，不谎报达标
+    var calCap = '';
+    if (plan.maxCal != null) {
+      var calOver = plan.withinMaxCal === false;
+      calCap = '<span class="cal-cap' + (calOver ? ' cal-over' : '') + '" title="' + (calOver ? '已超出你设的热量上限（当前全单 ' + num(plan.totalCalories, 0) + ' kcal）' : '全单 ' + num(plan.totalCalories, 0) + ' kcal，在你设的上限内') + '">上限 ' + num(plan.maxCal, 0) + ' kcal' + (calOver ? ' · 已超标' : '') + '</span>';
+    }
+    // 当前权重回显（第 8 轮）：滑块调过或目标加成后，让用户看到这版按什么标准打的分
+    var w = plan.weights;
+    var weightPill = (w && (w.price !== 1 || w.kcal !== 1 || w.protein !== 1 || w.taste !== 1))
+      ? '<span class="weights-pill" title="这版方案实际生效的评分权重">评分权重 价格×' + num(w.price, 1) + ' · 热量×' + num(w.kcal, 1) + ' · 蛋白×' + num(w.protein, 1) + ' · 口味×' + num(w.taste, 1) + '</span>' : '';
+    // 混合方案人话总结 + 权衡解释（第 8 轮 UI 任务 3）：null 就不渲染，不给普通方案硬编
+    var mixHtml = '';
+    var ms = plan.mixSummary;
+    if (ms && ms.text) {
+      mixHtml = '<div class="mix-summary"><h4>这份是怎么搭的</h4><p>' + esc(ms.text) + '</p>' +
+        (plan.tradeoffExplanation || []).map(function (line) { return '<p class="tradeoff-line">' + esc(line) + '</p>'; }).join('') + '</div>';
+    }
+    var compareButton = (plan.comboCompare && plan.comboCompare.length)
+      ? '<button type="button" class="detail-button" data-detail="comboCompare" aria-expanded="false">看套餐对比</button>' : '';
     return '<article class="plan-card" data-plan-id="' + attr(plan.planId) + '">' +
       '<div class="plan-main"><div class="plan-cover"><span class="plan-tier">' + esc(tierNames[plan.tier] || '个性搭配') + '</span>' + imageMarkup(items[0] || {}, '', (items[0] && items[0].name || plan.title) + '，麦当劳官方商品图') + '</div>' +
       '<div class="plan-copy"><div class="plan-title-row"><h3>' + esc(plan.title) + '</h3></div><p class="plan-subtitle">' + esc(plan.subtitle || (plan.people + ' 人 · ' + plan.itemCount + ' 款')) + '</p>' +
-      '<p class="plan-why">' + esc(plan.why || '') + '</p><div class="price-line"><strong class="plan-price">' + money(plan.totalPrice) + '</strong><span class="plan-original">' + money(plan.originalPrice) + '</span><span class="save-pill">省 ' + money(plan.discount) + '</span><span class="per-person">人均 ' + money(plan.perPersonPrice) + ' · ' + esc(plan.people) + ' 人</span>' + priceNote + '</div>' +
+      '<p class="plan-why">' + esc(plan.why || '') + '</p><div class="price-line"><strong class="plan-price">' + money(plan.totalPrice) + '</strong><span class="plan-original">' + money(plan.originalPrice) + '</span><span class="save-pill">省 ' + money(plan.discount) + '</span><span class="per-person">人均 ' + money(plan.perPersonPrice) + ' · ' + esc(plan.people) + ' 人</span>' + priceNote + calCap + weightPill + '</div>' +
       '<div class="plan-labels">' + tags.join('') + comboTag + '</div></div></div>' +
-      '<div class="plan-items" aria-label="方案菜品">' + itemHtml + '</div>' +
-      '<div class="plan-actions"><button type="button" class="detail-button" data-detail="calories" aria-expanded="false">看这顿热量</button><button type="button" class="detail-button" data-detail="nutrition" aria-expanded="false">看营养成分</button><button type="button" class="select-plan" aria-pressed="false">选这份</button></div>' +
-      '<section class="detail-panel" data-panel="calories" hidden></section><section class="detail-panel" data-panel="nutrition" hidden></section></article>';
+      '<div class="plan-items" aria-label="方案菜品">' + itemHtml + '</div>' + mixHtml +
+      '<div class="plan-actions"><button type="button" class="detail-button" data-detail="calories" aria-expanded="false">看这顿热量</button><button type="button" class="detail-button" data-detail="nutrition" aria-expanded="false">看营养成分</button>' + compareButton + '<button type="button" class="select-plan" aria-pressed="false">选这份</button></div>' +
+      '<section class="detail-panel" data-panel="calories" hidden></section><section class="detail-panel" data-panel="nutrition" hidden></section><section class="detail-panel" data-panel="comboCompare" hidden></section></article>';
   }
   function caloriePanel(plan) {
     if (plan.totalCalories == null || plan.calorieKnown === false) {
@@ -271,6 +303,39 @@
   function selectedPlanObjects() {
     return state.plans.filter(function (plan) { return state.selected.has(plan.planId); });
   }
+  /* 套餐 vs 拆开单点四维对比（第 8 轮 UI 任务 4）。
+   * 官方无数据的维度显示「官方未提供，未估算」，不画 0、不估算——红线。
+   * 每个完整套餐一条对比；子项面板的 want/avoid 会实时改变这里的口味匹配结论。 */
+  function comboComparePanel(plan) {
+    var rows = plan.comboCompare || [];
+    if (!rows.length) return '<h4>套餐 vs 拆开单点</h4><div class="notice">这份方案里没有可对比的完整套餐。</div>';
+    var html = '<h4>整份套餐 vs 拆开单点 · 官方数据</h4>';
+    rows.forEach(function (r) {
+      var priceTxt = r.price
+        ? ('套餐 ' + money(r.price.combo) + ' vs 拆开 ' + money(r.price.parts) +
+           (r.price.delta < 0 ? ' · 拆开省 ' + money(-r.price.delta) : r.price.delta > 0 ? ' · 套餐省 ' + money(r.price.delta) : ' · 价格一样'))
+        : '官方未提供，未估算';
+      var kcalTxt = r.kcal
+        ? (num(r.kcal.combo, 0) + ' vs ' + num(r.kcal.parts, 0) + ' kcal' + (r.kcal.delta ? '（' + (r.kcal.delta > 0 ? '+' : '') + num(r.kcal.delta, 0) + '）' : ''))
+        : '官方未提供，未估算';
+      var proTxt = r.protein
+        ? (num(r.protein.combo, 1) + ' vs ' + num(r.protein.parts, 1) + ' g' + (r.protein.delta ? '（' + (r.protein.delta > 0 ? '+' : '') + num(r.protein.delta, 1) + '）' : ''))
+        : '官方未提供，未估算';
+      var tasteTxt = (r.taste && (r.taste.parts || r.taste.combo)) ? r.taste.parts : '官方未提供，未估算';
+      html += '<div class="compare-card"><div class="compare-head"><strong>' + esc(r.combo) + '</strong>' +
+        buildTag(r.price && r.price.cheaper === 'parts' ? '拆开单点更省' : '整份套餐更省', r.price && r.price.cheaper === 'parts' ? 'combo' : 'new') + '</div>' +
+        '<div class="compare-rows">' +
+        '<div class="compare-row"><span>价格</span><span>' + priceTxt + '</span></div>' +
+        '<div class="compare-row"><span>热量</span><span>' + kcalTxt + '</span></div>' +
+        '<div class="compare-row"><span>蛋白质</span><span>' + proTxt + '</span></div>' +
+        '<div class="compare-row"><span>口味匹配</span><span>' + esc(tasteTxt) + '</span></div>' +
+        '</div>' +
+        (r.unresolvedParts && r.unresolvedParts.length ? '<p class="unknown-list">买不到、未编价：' + esc(r.unresolvedParts.join('、')) + '（官方无单点价）</p>' : '') +
+        (r.note ? '<p class="unknown-list">' + esc(r.note) + '</p>' : '') +
+        '</div>';
+    });
+    return html + '<p class="compare-note">官方 MCP 不支持套餐改配（没有改配接口）：不能让套餐去掉某个子项。要么买整份，要么把想要的子项按单点价另买。</p>';
+  }
   function updateSelectionBar() {
     var count = state.selected.size;
     els.selectionBar.hidden = !count;
@@ -284,6 +349,20 @@
   function showNotices(plans) {
     var first = plans && plans[0] || {};
     var notices = [];
+    // ⓿ 顶部「我理解成了」摘要（第 9 轮 UI 规则）：让用户一眼确认解析对不对——最重要的纠错入口
+    var fr = first.resolved || {};
+    var parts = [];
+    parts.push((fr.people || first.people || 1) + ' 人');
+    parts.push(fr.unlimited ? '预算不限' : ('预算 ' + (fr.budgetMin || 0) + (fr.budgetMax != null ? '–' + fr.budgetMax : ' 以上')));
+    if (fr.maxCal != null) parts.push('上限 ' + fr.maxCal + ' kcal');
+    if (first.goalInfo && first.goalInfo.recognized !== false && first.goalInfo.label) parts.push(first.goalInfo.label);
+    if (fr.avoid && fr.avoid.length) parts.push('不吃 ' + fr.avoid.join('、'));
+    (first.wanted || []).forEach(function (w) { parts.push('想吃 ' + w.name); });
+    (fr.itemPrefs || []).forEach(function (p) {
+      parts.push((p.pref === 'avoid' ? '不想要 ' : '想要 ') + (p.mention || p.name));
+    });
+    if (fr.singlesOnly) parts.push('全单点');
+    notices.push('<div class="notice notice-understand">🧭 我理解成了：' + esc(parts.join(' · ')) + '</div>');
     // ① 输入冲突：文本与控件不一致 / 忌口挡住点名菜——如实说谁生效了
     (first.conflicts || []).forEach(function (c) {
       notices.push('<div class="notice notice-warn">⚠ ' + esc(c.note) + '</div>');
@@ -327,8 +406,19 @@
   }
   /* 采集控件原值交给服务层 parseQuery 统一裁决（文本 > 控件 > 默认）。
    * 冲突检测、实际生效值（resolved）都在 service.js 里做，UI 只负责展示与回填。 */
+  function controlsTouched() {
+    return els.people.dataset.touched === 'true' || els.budgetMin.dataset.touched === 'true' ||
+      els.budgetMax.dataset.touched === 'true' || els.goal.dataset.touched === 'true' ||
+      els.unlimited.dataset.touched === 'true' || !!els.avoid.querySelector('input:checked');
+  }
   function mergeQuery() {
     var text = els.request.value.trim();
+    /* 最后一次用户动作生效（第 9 轮 UI 规则）：用户改过控件、且没再动输入框
+     * （内容还是上次提交那段）→ 以控件值为准，别让旧文本把改过的控件冲掉。
+     * 用户改了输入框 → 文本赢（text 与 lastSubmittedText 不同）。 */
+    if (state.lastSubmittedText != null && text === state.lastSubmittedText && controlsTouched()) {
+      text = '';
+    }
     var budgetMax = els.budgetMax.value === '' ? null : Number(els.budgetMax.value);
     var goal = els.goal.value.trim();
     if (!goal && !text) goal = '均衡就好';
@@ -431,6 +521,7 @@
     }
     var query = mergeQuery();
     state.lastQuery = query;
+    state.lastSubmittedText = text;   // 记录本次提交的原文：下次提交时若控件改过、文本没动 → 以控件为准
     appendMessage('user', text || [query.people + ' 人', query.unlimited ? '预算不限' : '预算 ' + query.budgetMin + ' 至 ' + query.budgetMax + ' 元', query.goal].filter(Boolean).join(' · '));
     await runRecommendation(query, {
       announce: '我按你的条件搭好了三份：省钱聚餐、低卡高蛋白和新品尝鲜。每份都可以展开看热量与官方营养信息。',
@@ -449,7 +540,7 @@
     if (!plan) return;
     button.setAttribute('aria-expanded', 'true');
     panel.hidden = false;
-    panel.innerHTML = kind === 'calories' ? caloriePanel(plan) : nutritionPanel(plan);
+    panel.innerHTML = kind === 'calories' ? caloriePanel(plan) : kind === 'comboCompare' ? comboComparePanel(plan) : nutritionPanel(plan);
   }
   async function selectedAction(mode) {
     var plans = selectedPlanObjects();

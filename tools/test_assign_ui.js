@@ -127,4 +127,106 @@ Object.keys(cases).forEach(function (name) {
   }
 });
 console.log(failures ? failures + ' FAILURES' : 'ALL SMOKE CHECKS PASSED');
-process.exit(failures ? 1 : 0);
+
+/* ================= 第 8/9 轮方案卡渲染回归（renderPlan / comboComparePanel） ================= */
+/* 提取 renderPlan + comboComparePanel 函数体（花括号配对，两个函数分别提取） */
+function extractFn(name) {
+  var start = src.indexOf('function ' + name + '(');
+  if (start < 0) { console.error('FAIL: ' + name + ' not found'); process.exit(1); }
+  var i = src.indexOf('{', start), depth = 0, end = -1;
+  for (var j = i; j < src.length; j++) {
+    if (src[j] === '{') depth++;
+    if (src[j] === '}') { depth--; if (depth === 0) { end = j + 1; break; } }
+  }
+  return src.slice(start, end);
+}
+var planSandbox = {
+  console: console,
+  document: { getElementById: stubEl, querySelectorAll: function () { return []; }, addEventListener: function () {}, createElement: function () { return stubEl('_tmp'); } },
+  window: { clearTimeout: function () {}, setTimeout: function () { return 0; } },
+  esc: function (v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]; }); },
+  money: function (v) { return v == null || !isFinite(Number(v)) ? '—' : '¥' + Number(v).toFixed(2).replace(/\.00$/, ''); },
+  num: function (v, d) { return v == null || !isFinite(Number(v)) ? '—' : Number(v).toLocaleString('zh-CN', { maximumFractionDigits: d == null ? 1 : d }); },
+  attr: function (v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]; }); },
+  buildTag: function (text, kind) { return '<span class="plan-label ' + (kind || '') + '">' + text + '</span>'; },
+  imageMarkup: function () { return '<span class="img-stub"></span>'; },
+  roleLabel: function () { return '主食'; },
+  state: { plans: [], availability: {}, mode: 'offline' }
+};
+vm.createContext(planSandbox);
+vm.runInContext(extractFn('renderPlan') + '\n' + extractFn('comboComparePanel') + '\nthis.renderPlan = renderPlan; this.comboComparePanel = comboComparePanel;', planSandbox);
+
+var planFailures = 0, planChecks = 0;
+function planCheck(cond, msg) { planChecks++; if (!cond) { planFailures++; console.error('FAIL [plan] ' + msg); } }
+var basePlan = {
+  planId: 'plan-budget-1', tier: 'budget', title: '省钱聚餐', subtitle: '2 人 · 4 款',
+  why: '按预算搭的', people: 2, itemCount: 4, items: [
+    { name: '麦香鸡套餐', quantity: 1, productCode: 'a1', sourceType: 'combo', fromCombo: null, combo: { comboPrice: 26.9, partsTotal: 37.9, save: 11, partsKnown: 3, partsCount: 3, complete: true }, imageLocal: 'img/x.png' },
+    { name: '麦香鸡', quantity: 1, productCode: 'b2', sourceType: 'comboPart', fromCombo: '麦香鸡套餐' },
+    { name: '中薯条', quantity: 1, productCode: 'c3', sourceType: 'single', fromCombo: null }
+  ],
+  totalPrice: 40.9, originalPrice: 51.9, discount: 11, perPersonPrice: 20.45,
+  simulated: true, priceSource: 'snapshot', newTags: [], promoTags: [],
+  mixSummary: { fullCombos: 1, singles: 1, comboParts: 1, text: '本方案含 1 个完整套餐 + 1 个单点 + 1 个套餐子项转单点' },
+  tradeoffExplanation: ['「麦香鸡套餐」拆开单点：比买整份省 ¥11，少 0 kcal', '官方 MCP 不支持套餐改配'],
+  comboCompare: [{
+    combo: '麦香鸡套餐', comboCode: '9900016073',
+    price: { combo: 26.9, parts: 15.9, delta: -11, cheaper: 'parts' },
+    kcal: { combo: 800, parts: 500, delta: -300 },
+    protein: { combo: 30, parts: 20, delta: -10 },
+    taste: { combo: '含 1 项你不想要的子项：中薯条', parts: '全部匹配（已避开 中薯条）', winner: 'parts' },
+    unresolvedParts: ['可乐中杯'], avoidedParts: ['中薯条'],
+    note: '子项 可乐中杯 在菜单内没有单点价'
+  }],
+  weights: { price: 1, kcal: 1, protein: 1, taste: 1.6 },
+  maxCal: 800, withinMaxCal: false,
+  singlesOnly: false, lateNight: false
+};
+try {
+  var html = planSandbox.renderPlan(basePlan);
+  planCheck(html.indexOf('src-part') >= 0, 'comboPart 角标渲染');
+  planCheck(html.indexOf('拆自 麦香鸡套餐') >= 0, 'comboPart fromCombo 透出');
+  planCheck(html.indexOf('src-combo') >= 0 && html.indexOf('src-single') >= 0, 'combo/single 角标渲染');
+  planCheck(html.indexOf('这份是怎么搭的') >= 0 && html.indexOf('1 个完整套餐') >= 0, 'mixSummary 渲染');
+  planCheck(html.indexOf('不支持套餐改配') >= 0, 'tradeoffExplanation 含不改配边界');
+  planCheck(html.indexOf('看套餐对比') >= 0, 'comboCompare 按钮出现');
+  planCheck(html.indexOf('data-panel="comboCompare"') >= 0, 'comboCompare 面板容器');
+  planCheck(html.indexOf('上限 800 kcal') >= 0 && html.indexOf('已超标') >= 0, 'maxCal 超标提示');
+  planCheck(html.indexOf('cal-over') >= 0, '超标黄牌 class');
+  planCheck(html.indexOf('评分权重') >= 0 && html.indexOf('口味×1.6') >= 0, '非默认权重回显');
+  planCheck(html.indexOf('套餐比单点省 ¥11') >= 0, '既有套餐省幅徽标不回归');
+  var compareHtml = planSandbox.comboComparePanel(basePlan);
+  planCheck(compareHtml.indexOf('麦香鸡套餐') >= 0, '对比卡标题');
+  planCheck(compareHtml.indexOf('拆开省 ¥11') >= 0, '价格差方向（拆开省）');
+  planCheck(compareHtml.indexOf('800 vs 500 kcal') >= 0, '热量对比');
+  planCheck(compareHtml.indexOf('30 vs 20 g') >= 0, '蛋白质对比');
+  planCheck(compareHtml.indexOf('买不到、未编价：可乐中杯') >= 0, 'unresolvedParts 不编价');
+  planCheck(compareHtml.indexOf('官方 MCP 不支持套餐改配') >= 0, '对比面板底部边界文案');
+  console.log('PASS renderPlan-rich (' + planChecks + ' checks)');
+} catch (e) { planFailures++; console.error('FAIL [plan] rich threw: ' + e.message); }
+
+try {
+  /* 普通方案：无 mixSummary/comboCompare/maxCal/权重默认 → 一律不渲染，不硬编 */
+  var plain = JSON.parse(JSON.stringify(basePlan));
+  plain.mixSummary = null; plain.tradeoffExplanation = null; plain.comboCompare = null;
+  plain.maxCal = null; plain.weights = { price: 1, kcal: 1, protein: 1, taste: 1 };
+  var plainHtml = planSandbox.renderPlan(plain);
+  planCheck(plainHtml.indexOf('mix-summary') < 0, '普通方案不渲染 mix 区块');
+  planCheck(plainHtml.indexOf('看套餐对比') < 0, '普通方案无对比按钮');
+  planCheck(plainHtml.indexOf('cal-cap') < 0, '无 maxCal 不渲染上限徽标');
+  planCheck(plainHtml.indexOf('weights-pill') < 0, '默认权重不回显');
+  planCheck(plainHtml.indexOf('全单点模式') < 0, '非 singlesOnly 不渲染模式标签');
+  /* singlesOnly 模式标签 */
+  var single = JSON.parse(JSON.stringify(plain));
+  single.singlesOnly = true;
+  planCheck(planSandbox.renderPlan(single).indexOf('全单点模式') >= 0, 'singlesOnly 模式标签');
+  /* 官方无数据的维度：null 不是 0 */
+  var noData = JSON.parse(JSON.stringify(basePlan));
+  noData.comboCompare = [{ combo: '测试套餐', price: { combo: 20, parts: 20, delta: 0, cheaper: 'combo' }, kcal: null, protein: null, taste: null }];
+  var noDataHtml = planSandbox.comboComparePanel(noData);
+  planCheck(noDataHtml.indexOf('官方未提供，未估算') >= 0, '无数据维度显示未提供');
+  planCheck(noDataHtml.indexOf('价格一样') >= 0, 'delta=0 文案');
+  console.log('PASS renderPlan-plain (累计 ' + planChecks + ' checks)');
+} catch (e) { planFailures++; console.error('FAIL [plan] plain threw: ' + e.message); }
+console.log(planFailures ? planFailures + ' PLAN FAILURES' : 'ALL PLAN CHECKS PASSED');
+if (failures || planFailures) process.exit(1);
